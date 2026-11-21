@@ -6,6 +6,7 @@ package kernel;
 
 import enums.EstadoProceso;
 import enums.ProcesoTipo;
+import enums.TipoOperacionIO;
 import java.util.UUID;
 
 /**
@@ -34,6 +35,10 @@ public class Pcb {
     
     // Contador de tiempo invertido en Modo Sistema Operativo
     private int tiempoModoSO;
+    
+    // NUEVOS CAMPOS PARA PROYECTO 2 (SISTEMA DE ARCHIVOS Y DISCO)
+    private TipoOperacionIO operacionIO;
+    private String rutaArchivo;
 
     public Pcb(String nombre, String computadorId, ProcesoTipo tipo, int prioridad, 
                int memoriaAsignada, long deadline, int tiempoRestanteEjecucion) {
@@ -52,6 +57,10 @@ public class Pcb {
         this.motivoBloqueo = "";
         this.tiempoModoSO = 0;
         this.tiempoEsperaIO = 0;
+        
+        // Inicializados en nulo/vacío hasta que se asigne una operación de E/S
+        this.operacionIO = null;
+        this.rutaArchivo = "";
     }
 
     public void incrementarPC() {
@@ -118,4 +127,11 @@ public class Pcb {
     
     public int getTiempoEsperaIO() { return tiempoEsperaIO; }
     public void setTiempoEsperaIO(int tiempoEsperaIO) { this.tiempoEsperaIO = tiempoEsperaIO; }
+
+    // GETTERS Y SETTERS NUEVOS
+    public TipoOperacionIO getOperacionIO() { return operacionIO; }
+    public void setOperacionIO(TipoOperacionIO operacionIO) { this.operacionIO = operacionIO; }
+    
+    public String getRutaArchivo() { return rutaArchivo; }
+    public void setRutaArchivo(String rutaArchivo) { this.rutaArchivo = rutaArchivo; }
 }
