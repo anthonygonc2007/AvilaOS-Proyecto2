@@ -4,96 +4,386 @@
  */
 package gui;
 
-import io.GestorJSON;
+import enums.PoliticaDisco;
+import enums.PoliticaPlanificacion;
 import io.ConfiguracionSimulacion;
-import java.awt.Color;
-import java.awt.Font;
+import io.GestorJSON;
+import java.awt.*;
+import java.io.File;
 import javax.swing.*;
-import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.awt.event.ActionEvent;
 
 /**
  *
  * @author Usuario
  */
 public class VistaConfiguracion extends javax.swing.JFrame {
-    private static final java.util.logging.Logger logger = java.util.logging.Logger.getLogger(VistaMonitoreo.class.getName());
+
     private static final Color COLOR_BG = new Color(18, 24, 38);
     private static final Color COLOR_PANEL_BG = new Color(28, 36, 54);
     private static final Color COLOR_CARD_BG = new Color(38, 48, 70);
     private static final Color COLOR_TEXT_MAIN = new Color(240, 244, 250);
     private static final Color COLOR_ACCENT_BLUE = new Color(51, 153, 255);
     private static final Color COLOR_ACCENT_GREEN = new Color(46, 204, 113);
+    private static final Color COLOR_ACCENT_RED = new Color(231, 76, 60);
+
+    private ConfiguracionSimulacion.ArchivoSistemaArchivosJSON datosFS;
+    private ConfiguracionSimulacion.ArchivoProcesosJSON datosProcesos;
+
+    private JLabel lblEstadoFS;
+    private JLabel lblEstadoProcesos;
+    private JButton btnIniciarSimulacion;
+
+    private JTextField txtTotalBloques;
+    private JTextField txtSwapBloques;
+    private JTextField txtCabezalInicial;
+    private JTextField txtVelocidadCabezal;
+    private JComboBox<PoliticaDisco> cbPoliticaDisco;
+
+    private JTextField txtDuracionCiclo;
+    private JTextField txtRamTotal;
+    private JComboBox<PoliticaPlanificacion> cbPoliticaCPU;
+    private JTextField txtQuantum;
+
+    private JTable tblPreviewFS;
+    private DefaultTableModel modelPreviewFS;
+    private JTable tblPreviewProcesos;
+    private DefaultTableModel modelPreviewProcesos;
 
     public VistaConfiguracion() {
         initComponents();
-        estiloFondo();
-        txtNumComp.setText("2"); // Mínimo 2 computadores según enunciado
-        inicializarTablas();
+        getContentPane().removeAll();
+        initCustomUI();
     }
 
-    private void estiloFondo() {
-        setTitle("ÁvilaOS - Vista 1: Configuración de Simulación Distribuida");
+    private void initCustomUI() {
+        setTitle("ÁvilaOS - Vista 1: Configuración de Sistema de Archivos, Disco y Procesos");
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setSize(1060, 720);
+        setLocationRelativeTo(null);
         getContentPane().setBackground(COLOR_BG);
+        getContentPane().setLayout(new BorderLayout(12, 12));
 
-        JLabel[] etiquetas = {jLabel1, jLabel2, jLabel3};
-        for (JLabel lbl : etiquetas) {
-            lbl.setForeground(COLOR_TEXT_MAIN);
-            lbl.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        JPanel pnlCarga = new JPanel(new GridLayout(1, 2, 12, 0));
+        pnlCarga.setBackground(COLOR_BG);
+        pnlCarga.setBorder(BorderFactory.createEmptyBorder(12, 12, 0, 12));
+
+        JPanel cardFS = crearTarjeta("1. JSON Sistema de Archivos y Disco (Obligatorio)");
+        JButton btnCargarFS = crearBoton("Cargar JSON Sistema de Archivos", COLOR_ACCENT_BLUE);
+        lblEstadoFS = new JLabel("Estado: Pendiente por cargar");
+        lblEstadoFS.setForeground(COLOR_ACCENT_RED);
+        lblEstadoFS.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnCargarFS.addActionListener(e -> accionCargarFS());
+        cardFS.add(btnCargarFS);
+        cardFS.add(Box.createVerticalStrut(6));
+        cardFS.add(lblEstadoFS);
+
+        JPanel cardProc = crearTarjeta("2. JSON Procesos y Configuración (Obligatorio)");
+        JButton btnCargarProc = crearBoton("Cargar JSON Procesos y Config", COLOR_ACCENT_BLUE);
+        lblEstadoProcesos = new JLabel("Estado: Pendiente por cargar");
+        lblEstadoProcesos.setForeground(COLOR_ACCENT_RED);
+        lblEstadoProcesos.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnCargarProc.addActionListener(e -> accionCargarProcesos());
+        cardProc.add(btnCargarProc);
+        cardProc.add(Box.createVerticalStrut(6));
+        cardProc.add(lblEstadoProcesos);
+
+        pnlCarga.add(cardFS);
+        pnlCarga.add(cardProc);
+        getContentPane().add(pnlCarga, BorderLayout.NORTH);
+
+        JPanel pnlCentro = new JPanel(new BorderLayout(10, 10));
+        pnlCentro.setBackground(COLOR_BG);
+        pnlCentro.setBorder(BorderFactory.createEmptyBorder(0, 12, 0, 12));
+
+        JPanel pnlParams = new JPanel(new GridLayout(1, 2, 12, 0));
+        pnlParams.setOpaque(false);
+
+        JPanel pnlDiscoParams = crearTarjeta("Parámetros del Disco Simulado y Swap");
+        pnlDiscoParams.setLayout(new GridLayout(5, 2, 8, 6));
+        txtTotalBloques = crearCampoTexto("200");
+        txtSwapBloques = crearCampoTexto("100");
+        txtCabezalInicial = crearCampoTexto("50");
+        txtVelocidadCabezal = crearCampoTexto("1");
+        cbPoliticaDisco = new JComboBox<>(PoliticaDisco.values());
+        estilarCombo(cbPoliticaDisco);
+
+        agregarFilaForm(pnlDiscoParams, "Total de Bloques del Disco:", txtTotalBloques);
+        agregarFilaForm(pnlDiscoParams, "Tamaño Área Swap (bloques):", txtSwapBloques);
+        agregarFilaForm(pnlDiscoParams, "Posición Inicial del Cabezal:", txtCabezalInicial);
+        agregarFilaForm(pnlDiscoParams, "Velocidad Cabezal (pistas/tick):", txtVelocidadCabezal);
+        agregarFilaForm(pnlDiscoParams, "Política Inicial de Disco:", cbPoliticaDisco);
+
+        JPanel pnlCompParams = crearTarjeta("Parámetros del Computador y Reloj");
+        pnlCompParams.setLayout(new GridLayout(4, 2, 8, 6));
+        txtDuracionCiclo = crearCampoTexto("300");
+        txtRamTotal = crearCampoTexto("1024");
+        cbPoliticaCPU = new JComboBox<>(PoliticaPlanificacion.values());
+        estilarCombo(cbPoliticaCPU);
+        txtQuantum = crearCampoTexto("2");
+
+        agregarFilaForm(pnlCompParams, "Duración del Ciclo (ms):", txtDuracionCiclo);
+        agregarFilaForm(pnlCompParams, "Capacidad RAM (unidades/bloques):", txtRamTotal);
+        agregarFilaForm(pnlCompParams, "Política Planificación CPU:", cbPoliticaCPU);
+        agregarFilaForm(pnlCompParams, "Quantum (Round Robin):", txtQuantum);
+
+        pnlParams.add(pnlDiscoParams);
+        pnlParams.add(pnlCompParams);
+        pnlCentro.add(pnlParams, BorderLayout.NORTH);
+
+        JPanel pnlTablas = new JPanel(new GridLayout(2, 1, 0, 8));
+        pnlTablas.setOpaque(false);
+
+        modelPreviewFS = new DefaultTableModel(
+            new Object[]{"Ruta", "Tipo", "Bloque Inicio", "Cant. Bloques", "Dueño", "Permisos"}, 0
+        );
+        tblPreviewFS = new JTable(modelPreviewFS);
+        estilarTabla(tblPreviewFS);
+        JScrollPane spFS = new JScrollPane(tblPreviewFS);
+        spFS.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(COLOR_CARD_BG), "Vista Previa: Sistema de Archivos",
+            0, 0, new Font("Segoe UI", Font.BOLD, 12), COLOR_ACCENT_BLUE));
+
+        modelPreviewProcesos = new DefaultTableModel(
+            new Object[]{"Nombre", "Memoria", "Deadline", "Instrucciones", "Operación E/S", "Ruta Objetivo"}, 0
+        );
+        tblPreviewProcesos = new JTable(modelPreviewProcesos);
+        estilarTabla(tblPreviewProcesos);
+        JScrollPane spProc = new JScrollPane(tblPreviewProcesos);
+        spProc.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(COLOR_CARD_BG), "Vista Previa: Procesos de E/S Cargados",
+            0, 0, new Font("Segoe UI", Font.BOLD, 12), COLOR_ACCENT_BLUE));
+
+        pnlTablas.add(spFS);
+        pnlTablas.add(spProc);
+        pnlCentro.add(pnlTablas, BorderLayout.CENTER);
+        getContentPane().add(pnlCentro, BorderLayout.CENTER);
+
+        JPanel pnlFooter = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 12));
+        pnlFooter.setBackground(COLOR_PANEL_BG);
+
+        btnIniciarSimulacion = new JButton("Iniciar Simulación de ÁvilaOS") {
+    @Override
+    public void setEnabled(boolean b) {
+        super.setEnabled(b);
+        if (b) {
+            setBackground(COLOR_ACCENT_GREEN);
+            setForeground(Color.BLACK); // O Color.WHITE según prefieras
+        } else {
+            setBackground(new Color(60, 68, 82));   // Fondo gris oscuro apagado
+            setForeground(new Color(140, 148, 160)); // Texto gris claro
         }
-
-        JLabel[] titulosSecciones = {jLabel4, jLabel5, jLabel6};
-        for (JLabel lbl : titulosSecciones) {
-            lbl.setForeground(COLOR_ACCENT_BLUE);
-            lbl.setFont(new Font("Segoe UI", Font.BOLD, 14));
-        }
-
-        JTextField[] campos = {txtDuracionCiclo, txtNumComp, txtLatenciaRed};
-        for (JTextField txt : campos) {
-            txt.setBackground(new Color(15, 20, 30));
-            txt.setForeground(COLOR_TEXT_MAIN);
-            txt.setCaretColor(COLOR_ACCENT_BLUE);
-            txt.setFont(new Font("Segoe UI", Font.BOLD, 12));
-            txt.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(COLOR_CARD_BG, 1),
-                BorderFactory.createEmptyBorder(3, 6, 3, 6)
-            ));
-        }
-
-        estiloBoton(GuardarConfiguracion, COLOR_CARD_BG);
-        estiloBoton(CargarArchivo, COLOR_CARD_BG);
-        estiloBoton(Monitoreo, COLOR_ACCENT_GREEN);
-        estiloBoton(agregarBuffer, COLOR_CARD_BG);
-        estiloBoton(quitarBuffer, COLOR_CARD_BG);
-        estiloBoton(agregarProceso, COLOR_CARD_BG);
-        estiloBoton(quitarProceso, COLOR_CARD_BG);
-
-        estiloTabla(tblComputadores);
-        estiloTabla(tblBuffers);
-        estiloTabla(tblProcesos);
+        repaint();
     }
 
-    private void estiloBoton(JButton btn, Color colorFondo) {
-        btn.setBackground(colorFondo);
+    @Override
+    protected void paintComponent(Graphics g) {
+        Graphics2D g2 = (Graphics2D) g.create();
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2.setColor(getBackground());
+        g2.fillRoundRect(0, 0, getWidth(), getHeight(), 8, 8);
+        g2.dispose();
+        super.paintComponent(g);
+    }
+};
+btnIniciarSimulacion.setContentAreaFilled(false);
+btnIniciarSimulacion.setBorderPainted(false);
+btnIniciarSimulacion.setFocusPainted(false);
+btnIniciarSimulacion.setFont(new Font("Segoe UI", Font.BOLD, 12));
+btnIniciarSimulacion.setPreferredSize(new Dimension(300, 38));
+btnIniciarSimulacion.setEnabled(false);
+btnIniciarSimulacion.addActionListener(e -> accionIniciarSimulacion());
+
+        pnlFooter.add(btnIniciarSimulacion);
+        getContentPane().add(pnlFooter, BorderLayout.SOUTH);
+    }
+
+    private void accionCargarFS() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Seleccionar JSON del Sistema de Archivos (.json)");
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File archivo = chooser.getSelectedFile();
+            try {
+                GestorJSON gestor = new GestorJSON();
+                datosFS = gestor.cargarSistemaArchivosJSON(archivo.getAbsolutePath());
+
+                txtTotalBloques.setText(String.valueOf(datosFS.diskConfig.totalBlocks));
+                txtCabezalInicial.setText(String.valueOf(datosFS.diskConfig.initialHead));
+
+                modelPreviewFS.setRowCount(0);
+                if (datosFS.fileSystem != null) {
+                    for (ConfiguracionSimulacion.NodoFSJSON n : datosFS.fileSystem) {
+                        if (n != null) {
+                            modelPreviewFS.addRow(new Object[]{
+                                n.path, n.type,
+                                (n.startBlock != null) ? n.startBlock : "-",
+                                (n.blocks != null) ? n.blocks : "-",
+                                n.owner, n.permissions
+                            });
+                        }
+                    }
+                }
+
+                lblEstadoFS.setText("Cargado: " + archivo.getName());
+                lblEstadoFS.setForeground(COLOR_ACCENT_GREEN);
+                verificarHabilitacionInicio();
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "Error al leer JSON de Sistema de Archivos:\n" + ex.getMessage(),
+                    "Error JSON", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private void accionCargarProcesos() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Seleccionar JSON de Procesos y Configuración (.json)");
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File archivo = chooser.getSelectedFile();
+            try {
+                GestorJSON gestor = new GestorJSON();
+                datosProcesos = gestor.cargarProcesosJSON(archivo.getAbsolutePath());
+
+                txtDuracionCiclo.setText(String.valueOf(datosProcesos.globalConfig.cycleDurationMs));
+                txtSwapBloques.setText(String.valueOf(datosProcesos.globalConfig.swapSizeBlocks));
+                if (datosProcesos.globalConfig.headSpeed != null) {
+                    txtVelocidadCabezal.setText(String.valueOf(datosProcesos.globalConfig.headSpeed));
+                }
+
+                if (datosProcesos.globalConfig.initialDiskPolicy != null) {
+                    String polNorm = datosProcesos.globalConfig.initialDiskPolicy.trim().toUpperCase().replace("-", "_");
+                    try {
+                        cbPoliticaDisco.setSelectedItem(PoliticaDisco.valueOf(polNorm));
+                    } catch (IllegalArgumentException ignored) {}
+                }
+
+                txtRamTotal.setText(String.valueOf(datosProcesos.computer.ramCapacity));
+                txtQuantum.setText(String.valueOf(datosProcesos.computer.quantum));
+                if (datosProcesos.computer.policy != null) {
+                    String cpuPol = datosProcesos.computer.policy.trim().toUpperCase();
+                    try {
+                        cbPoliticaCPU.setSelectedItem(PoliticaPlanificacion.valueOf(cpuPol));
+                    } catch (IllegalArgumentException ignored) {}
+                }
+
+                modelPreviewProcesos.setRowCount(0);
+                if (datosProcesos.processes != null) {
+                    for (ConfiguracionSimulacion.ProcessJSON p : datosProcesos.processes) {
+                        if (p != null) {
+                            modelPreviewProcesos.addRow(new Object[]{
+                                p.name, p.memory, p.deadline, p.instructions, p.operation, p.targetPath
+                            });
+                        }
+                    }
+                }
+
+                lblEstadoProcesos.setText("Cargado: " + archivo.getName());
+                lblEstadoProcesos.setForeground(COLOR_ACCENT_GREEN);
+                verificarHabilitacionInicio();
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "Error al leer JSON de Procesos:\n" + ex.getMessage(),
+                    "Error JSON", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private void verificarHabilitacionInicio() {
+        btnIniciarSimulacion.setEnabled(datosFS != null && datosProcesos != null);
+    }
+
+    private void accionIniciarSimulacion() {
+        if (datosFS == null || datosProcesos == null) {
+            JOptionPane.showMessageDialog(this,
+                "Debe cargar obligatoriamente ambos archivos JSON antes de iniciar.",
+                "Archivos Faltantes", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        if (!ValidadorCampos.validarEnteroRango(txtTotalBloques, "Total de Bloques", 20, 2000)) return;
+        int totalBloques = Integer.parseInt(txtTotalBloques.getText().trim());
+
+        if (!ValidadorCampos.validarEnteroRango(txtSwapBloques, "Tamaño Área Swap", 1, totalBloques - 10)) return;
+        if (!ValidadorCampos.validarEnteroRango(txtCabezalInicial, "Posición Inicial del Cabezal", 0, totalBloques - 1)) return;
+        if (!ValidadorCampos.validarEnteroRango(txtVelocidadCabezal, "Velocidad del Cabezal", 1, totalBloques)) return;
+        if (!ValidadorCampos.validarEnteroRango(txtDuracionCiclo, "Duración del Ciclo (ms)", 50, 10000)) return;
+        if (!ValidadorCampos.validarEnteroRango(txtRamTotal, "Capacidad RAM", 16, 65536)) return;
+        if (!ValidadorCampos.validarEnteroRango(txtQuantum, "Quantum", 0, 100)) return;
+
+        datosFS.diskConfig.totalBlocks = totalBloques;
+        datosFS.diskConfig.initialHead = Integer.parseInt(txtCabezalInicial.getText().trim());
+
+        datosProcesos.globalConfig.swapSizeBlocks = Integer.parseInt(txtSwapBloques.getText().trim());
+        datosProcesos.globalConfig.cycleDurationMs = Integer.parseInt(txtDuracionCiclo.getText().trim());
+        datosProcesos.globalConfig.initialDiskPolicy = ((PoliticaDisco) cbPoliticaDisco.getSelectedItem()).name();
+
+        datosProcesos.computer.ramCapacity = Integer.parseInt(txtRamTotal.getText().trim());
+        datosProcesos.computer.policy = ((PoliticaPlanificacion) cbPoliticaCPU.getSelectedItem()).name();
+        datosProcesos.computer.quantum = Integer.parseInt(txtQuantum.getText().trim());
+
+        ConfiguracionSimulacion configUnificada = new ConfiguracionSimulacion();
+        configUnificada.datosFS = datosFS;
+        configUnificada.datosProcesos = datosProcesos;
+        configUnificada.velocidadCabezal = Integer.parseInt(txtVelocidadCabezal.getText().trim());
+
+        VistaMonitoreo monitoreo = new VistaMonitoreo(configUnificada);
+        monitoreo.setVisible(true);
+    }
+
+    private JPanel crearTarjeta(String titulo) {
+        JPanel p = new JPanel();
+        p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+        p.setBackground(COLOR_PANEL_BG);
+        p.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(COLOR_CARD_BG), titulo,
+            0, 0, new Font("Segoe UI", Font.BOLD, 12), COLOR_ACCENT_BLUE));
+        return p;
+    }
+
+    private void agregarFilaForm(JPanel panel, String etiqueta, JComponent campo) {
+        JLabel lbl = new JLabel(etiqueta);
+        lbl.setForeground(COLOR_TEXT_MAIN);
+        lbl.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        panel.add(lbl);
+        panel.add(campo);
+    }
+
+    private JTextField crearCampoTexto(String valorInicial) {
+        JTextField txt = new JTextField(valorInicial);
+        txt.setBackground(new Color(15, 20, 30));
+        txt.setForeground(COLOR_TEXT_MAIN);
+        txt.setCaretColor(COLOR_ACCENT_BLUE);
+        txt.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        txt.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(COLOR_CARD_BG, 1),
+            BorderFactory.createEmptyBorder(3, 6, 3, 6)
+        ));
+        return txt;
+    }
+
+    private void estilarCombo(JComboBox<?> combo) {
+        combo.setBackground(new Color(15, 20, 30));
+        combo.setForeground(COLOR_TEXT_MAIN);
+        combo.setFont(new Font("Segoe UI", Font.BOLD, 12));
+    }
+
+    private JButton crearBoton(String texto, Color bg) {
+        JButton btn = new JButton(texto);
+        btn.setBackground(bg);
         btn.setForeground(Color.WHITE);
         btn.setFont(new Font("Segoe UI", Font.BOLD, 12));
         btn.setFocusPainted(false);
-        btn.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(COLOR_CARD_BG.brighter(), 1),
-            BorderFactory.createEmptyBorder(5, 10, 5, 10)
-        ));
+        return btn;
     }
 
-    private void estiloTabla(JTable tabla) {
+    private void estilarTabla(JTable tabla) {
         tabla.setBackground(new Color(22, 30, 44));
         tabla.setForeground(COLOR_TEXT_MAIN);
         tabla.setGridColor(COLOR_CARD_BG);
-        tabla.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        tabla.setRowHeight(24);
-        tabla.setShowGrid(true);
+        tabla.setRowHeight(22);
         tabla.getTableHeader().setBackground(COLOR_PANEL_BG);
         tabla.getTableHeader().setForeground(COLOR_ACCENT_BLUE);
-        tabla.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 12));
+        tabla.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 11));
     }
 
     /**
@@ -101,217 +391,26 @@ public class VistaConfiguracion extends javax.swing.JFrame {
      * WARNING: Do NOT modify this code. The content of this method is always
      * regenerated by the Form Editor.
      */
-    @SuppressWarnings("unchecked")
+    // </editor-fold>
+@SuppressWarnings("unchecked")
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
-        CargarArchivo = new javax.swing.JButton();
-        GuardarConfiguracion = new javax.swing.JButton();
-        jLabel1 = new javax.swing.JLabel();
-        jLabel2 = new javax.swing.JLabel();
-        jLabel3 = new javax.swing.JLabel();
-        txtDuracionCiclo = new javax.swing.JTextField();
-        txtNumComp = new javax.swing.JTextField();
-        txtLatenciaRed = new javax.swing.JTextField();
-        jScrollPane1 = new javax.swing.JScrollPane();
-        tblComputadores = new javax.swing.JTable();
-        jScrollPane2 = new javax.swing.JScrollPane();
-        tblBuffers = new javax.swing.JTable();
-        jScrollPane3 = new javax.swing.JScrollPane();
-        tblProcesos = new javax.swing.JTable();
-        Monitoreo = new javax.swing.JButton();
-        jLabel4 = new javax.swing.JLabel();
-        jLabel5 = new javax.swing.JLabel();
-        jLabel6 = new javax.swing.JLabel();
-        agregarBuffer = new javax.swing.JButton();
-        quitarBuffer = new javax.swing.JButton();
-        agregarProceso = new javax.swing.JButton();
-        quitarProceso = new javax.swing.JButton();
-
         setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
-        getContentPane().setLayout(new org.netbeans.lib.awtextra.AbsoluteLayout());
 
-        CargarArchivo.setText("Cargar Archivo");
-        CargarArchivo.addActionListener(this::CargarArchivoActionPerformed);
-        getContentPane().add(CargarArchivo, new org.netbeans.lib.awtextra.AbsoluteConstraints(20, 50, 151, -1));
-
-        GuardarConfiguracion.setText("Guardar Configuración");
-        GuardarConfiguracion.addActionListener(this::GuardarConfiguracionActionPerformed);
-        getContentPane().add(GuardarConfiguracion, new org.netbeans.lib.awtextra.AbsoluteConstraints(20, 20, -1, -1));
-
-        jLabel1.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-        jLabel1.setText("Duración del Ciclo:");
-        getContentPane().add(jLabel1, new org.netbeans.lib.awtextra.AbsoluteConstraints(40, 120, -1, -1));
-
-        jLabel2.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-        jLabel2.setText("Número de computadores:");
-        getContentPane().add(jLabel2, new org.netbeans.lib.awtextra.AbsoluteConstraints(20, 150, -1, -1));
-
-        jLabel3.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-        jLabel3.setText("Latencia en red (ciclos):");
-        getContentPane().add(jLabel3, new org.netbeans.lib.awtextra.AbsoluteConstraints(30, 190, -1, -1));
-        getContentPane().add(txtDuracionCiclo, new org.netbeans.lib.awtextra.AbsoluteConstraints(180, 110, 130, -1));
-
-        txtNumComp.addActionListener(this::txtNumCompActionPerformed);
-        txtNumComp.addKeyListener(new java.awt.event.KeyAdapter() {
-            public void keyReleased(java.awt.event.KeyEvent evt) {
-                txtNumCompKeyReleased(evt);
-            }
-        });
-        getContentPane().add(txtNumComp, new org.netbeans.lib.awtextra.AbsoluteConstraints(180, 150, 126, -1));
-        getContentPane().add(txtLatenciaRed, new org.netbeans.lib.awtextra.AbsoluteConstraints(180, 190, 130, -1));
-
-        tblComputadores.setModel(new javax.swing.table.DefaultTableModel(
-            new Object [][] {
-                {null, null, null, null},
-                {null, null, null, null},
-                {null, null, null, null},
-                {null, null, null, null}
-            },
-            new String [] {
-                "ID", "RAM (MB)", "Política Inicial", "Quantum"
-            }
-        ) {
-            Class[] types = new Class [] {
-                java.lang.Integer.class, java.lang.Integer.class, java.lang.String.class, java.lang.Integer.class
-            };
-
-            public Class getColumnClass(int columnIndex) {
-                return types [columnIndex];
-            }
-        });
-        tblComputadores.setShowGrid(true);
-        tblComputadores.addKeyListener(new java.awt.event.KeyAdapter() {
-            public void keyReleased(java.awt.event.KeyEvent evt) {
-                tblComputadoresKeyReleased(evt);
-            }
-        });
-        jScrollPane1.setViewportView(tblComputadores);
-
-        getContentPane().add(jScrollPane1, new org.netbeans.lib.awtextra.AbsoluteConstraints(370, 240, 620, 110));
-
-        tblBuffers.setModel(new javax.swing.table.DefaultTableModel(
-            new Object [][] {
-                {null, null, null},
-                {null, null, null},
-                {null, null, null},
-                {null, null, null}
-            },
-            new String [] {
-                "ID Buffer", "Capacidad", "Anfitrión"
-            }
-        ) {
-            Class[] types = new Class [] {
-                java.lang.String.class, java.lang.Integer.class, java.lang.String.class
-            };
-
-            public Class getColumnClass(int columnIndex) {
-                return types [columnIndex];
-            }
-        });
-        tblBuffers.setShowGrid(true);
-        jScrollPane2.setViewportView(tblBuffers);
-
-        getContentPane().add(jScrollPane2, new org.netbeans.lib.awtextra.AbsoluteConstraints(370, 40, 620, 110));
-
-        tblProcesos.setModel(new javax.swing.table.DefaultTableModel(
-            new Object [][] {
-                {null, null, null, null, null, null, null, null, null, null, null},
-                {null, null, null, null, null, null, null, null, null, null, null},
-                {null, null, null, null, null, null, null, null, null, null, null},
-                {null, null, null, null, null, null, null, null, null, null, null}
-            },
-            new String [] {
-                "ID", "Nombre", "Comp. Asignado", "Tipo", "Prioridad", "Memoria (MB)", "Deadline", "Instrucciones/Restante", "Buffer Asociado", "Frecuencia Ciclos", "Total Elementos"
-            }
-        ) {
-            Class[] types = new Class [] {
-                java.lang.String.class, java.lang.String.class, java.lang.String.class, java.lang.String.class, java.lang.Integer.class, java.lang.Integer.class, java.lang.Long.class, java.lang.Integer.class, java.lang.String.class, java.lang.Integer.class, java.lang.Integer.class
-            };
-
-            public Class getColumnClass(int columnIndex) {
-                return types [columnIndex];
-            }
-        });
-        tblProcesos.setShowGrid(true);
-        jScrollPane3.setViewportView(tblProcesos);
-
-        getContentPane().add(jScrollPane3, new org.netbeans.lib.awtextra.AbsoluteConstraints(10, 420, 1000, 110));
-
-        Monitoreo.setText("Iniciar");
-        Monitoreo.addActionListener(this::MonitoreoActionPerformed);
-        getContentPane().add(Monitoreo, new org.netbeans.lib.awtextra.AbsoluteConstraints(30, 250, 240, 30));
-
-        jLabel4.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-        jLabel4.setText("Buffers");
-        getContentPane().add(jLabel4, new org.netbeans.lib.awtextra.AbsoluteConstraints(620, 20, 110, -1));
-
-        jLabel5.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-        jLabel5.setText("Computadores");
-        getContentPane().add(jLabel5, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 220, -1, -1));
-
-        jLabel6.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-        jLabel6.setText("Procesos");
-        getContentPane().add(jLabel6, new org.netbeans.lib.awtextra.AbsoluteConstraints(490, 400, -1, -1));
-
-        agregarBuffer.setText("Agregar Buffer");
-        agregarBuffer.addActionListener(this::agregarBufferActionPerformed);
-        getContentPane().add(agregarBuffer, new org.netbeans.lib.awtextra.AbsoluteConstraints(490, 170, 150, -1));
-
-        quitarBuffer.setText("Eliminar Buffer");
-        quitarBuffer.addActionListener(this::quitarBufferActionPerformed);
-        getContentPane().add(quitarBuffer, new org.netbeans.lib.awtextra.AbsoluteConstraints(660, 170, 150, -1));
-
-        agregarProceso.setText("Agregar Proceso");
-        agregarProceso.addActionListener(this::agregarProcesoActionPerformed);
-        getContentPane().add(agregarProceso, new org.netbeans.lib.awtextra.AbsoluteConstraints(300, 550, 150, -1));
-
-        quitarProceso.setText("Eliminar Proceso");
-        quitarProceso.addActionListener(this::quitarProcesoActionPerformed);
-        getContentPane().add(quitarProceso, new org.netbeans.lib.awtextra.AbsoluteConstraints(570, 550, 150, -1));
+        javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
+        getContentPane().setLayout(layout);
+        layout.setHorizontalGroup(
+            layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGap(0, 1024, Short.MAX_VALUE)
+        );
+        layout.setVerticalGroup(
+            layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGap(0, 720, Short.MAX_VALUE)
+        );
 
         pack();
     }// </editor-fold>//GEN-END:initComponents
-
-    private void CargarArchivoActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_CargarArchivoActionPerformed
-        btnCargarArchivo(evt);
-    }//GEN-LAST:event_CargarArchivoActionPerformed
-
-    private void tblComputadoresKeyReleased(java.awt.event.KeyEvent evt) {//GEN-FIRST:event_tblComputadoresKeyReleased
-        actualizarTablaComputadores();
-    }//GEN-LAST:event_tblComputadoresKeyReleased
-
-    private void GuardarConfiguracionActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_GuardarConfiguracionActionPerformed
-        btnGuardarConfiguracion(evt);
-    }//GEN-LAST:event_GuardarConfiguracionActionPerformed
-
-    private void MonitoreoActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_MonitoreoActionPerformed
-        btnMonitoreo(evt);
-    }//GEN-LAST:event_MonitoreoActionPerformed
-
-    private void txtNumCompActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_txtNumCompActionPerformed
-        actualizarTablaComputadores();
-    }//GEN-LAST:event_txtNumCompActionPerformed
-
-    private void txtNumCompKeyReleased(java.awt.event.KeyEvent evt) {//GEN-FIRST:event_txtNumCompKeyReleased
-        // TODO add your handling code here:
-    }//GEN-LAST:event_txtNumCompKeyReleased
-
-    private void agregarBufferActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_agregarBufferActionPerformed
-        btnAgregarBuffer(evt);
-    }//GEN-LAST:event_agregarBufferActionPerformed
-
-    private void quitarBufferActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_quitarBufferActionPerformed
-        btnQuitarBuffer(evt);
-    }//GEN-LAST:event_quitarBufferActionPerformed
-
-    private void agregarProcesoActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_agregarProcesoActionPerformed
-        btnAgregarProceso(evt);
-    }//GEN-LAST:event_agregarProcesoActionPerformed
-
-    private void quitarProcesoActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_quitarProcesoActionPerformed
-        btnQuitarProceso(evt);
-    }//GEN-LAST:event_quitarProcesoActionPerformed
 
     /**
      * @param args the command line arguments
@@ -330,356 +429,15 @@ public class VistaConfiguracion extends javax.swing.JFrame {
                 }
             }
         } catch (ReflectiveOperationException | javax.swing.UnsupportedLookAndFeelException ex) {
-            logger.log(java.util.logging.Level.SEVERE, null, ex);
+            ex.printStackTrace();
         }
         //</editor-fold>
 
         /* Create and display the form */
         java.awt.EventQueue.invokeLater(() -> new VistaConfiguracion().setVisible(true));
     }
-    
-    /**
-     * Carga un archivo JSON con los parametros de la simulacion
-     * @param evt 
-     */
-    private void btnCargarArchivo(java.awt.event.ActionEvent evt) {                                                 
-    javax.swing.JFileChooser seleccionador = new javax.swing.JFileChooser();
-    seleccionador.setDialogTitle("Seleccionar archivo de configuración (.json)");
-    
-    int resultado = seleccionador.showOpenDialog(this);
-    if (resultado == javax.swing.JFileChooser.APPROVE_OPTION) {
-        java.io.File archivoSeleccionado = seleccionador.getSelectedFile();
-        GestorJSON gestor = new GestorJSON();
-        
-        try {
-            ConfiguracionSimulacion config = gestor.cargarConfiguracion(archivoSeleccionado.getAbsolutePath());
-            
-            txtDuracionCiclo.setText(String.valueOf(config.duracionCicloMs));
-            txtLatenciaRed.setText(String.valueOf(config.latenciaRedCiclos));
-            txtNumComp.setText(String.valueOf(config.numComputadores));
-            
-            // Computadores
-            javax.swing.table.DefaultTableModel modelo = (javax.swing.table.DefaultTableModel) tblComputadores.getModel();
-            modelo.setRowCount(0);
-            if (config.computadores != null) {
-                for (ConfiguracionSimulacion.ConfigComputador comp : config.computadores) {
-                    modelo.addRow(new Object[]{
-                        comp.id, 
-                        comp.ramTotal, 
-                        comp.politicaInicial, 
-                        comp.quantum
-                    });
-                }
-            }
-            
-            // Buffers
-            javax.swing.table.DefaultTableModel modeloBuffer = (javax.swing.table.DefaultTableModel) tblBuffers.getModel();
-            modeloBuffer.setRowCount(0);
-            if (config.buffers != null) {
-                for (ConfiguracionSimulacion.ConfigBuffer b : config.buffers) {
-                    modeloBuffer.addRow(new Object[]{
-                        b.id,
-                        b.capacidad,
-                        b.computadorAnfitrionId
-                    });
-                }
-            }
-            
-            // Procesos (Mapeo exacto 1:1 con las columnas de tblProcesos)
-            javax.swing.table.DefaultTableModel modelProc = (javax.swing.table.DefaultTableModel) tblProcesos.getModel();
-            modelProc.setRowCount(0);
-            if (config.procesos != null) {
-                for (ConfiguracionSimulacion.ConfigProceso p : config.procesos) {
-                    modelProc.addRow(new Object[]{
-                        p.id, 
-                        p.nombre, 
-                        p.computadorId, 
-                        p.tipo, 
-                        p.prioridad, 
-                        p.memoriaAsignada, 
-                        p.deadline, 
-                        p.tiempoRestanteEjecucion, 
-                        p.bufferAsociadoId, 
-                        p.ciclosProducirConsumir, 
-                        p.elementosRequeridos
-                    });
-                }
-            }
-            
-            javax.swing.JOptionPane.showMessageDialog(this, 
-                "¡Configuración cargada correctamente!", 
-                "Éxito", 
-                javax.swing.JOptionPane.INFORMATION_MESSAGE);
-                
-        } catch (Exception e) {
-            javax.swing.JOptionPane.showMessageDialog(this, 
-                "Error al leer el archivo JSON: " + e.getMessage(), 
-                "Error de Lectura", 
-                javax.swing.JOptionPane.ERROR_MESSAGE);
-        }
-    }
-}
-    
-    /**
-     * Extrae la información en los campos de texto y tablas y las almacena como
-     * un objeto ConfiguracionSimulacion para luego guardarla
-     * @return
-     * @throws NumberFormatException 
-     */
-    private ConfiguracionSimulacion obtenerConfiguracion() throws NumberFormatException {
-    // Detener edición activa para confirmar celdas modificadas
-    if (tblComputadores.isEditing()) tblComputadores.getCellEditor().stopCellEditing();
-    if (tblBuffers.isEditing()) tblBuffers.getCellEditor().stopCellEditing();
-    if (tblProcesos.isEditing()) tblProcesos.getCellEditor().stopCellEditing();
 
-    ConfiguracionSimulacion config = new ConfiguracionSimulacion();
-
-    // 1. Parámetros
-    config.duracionCicloMs = Integer.parseInt(txtDuracionCiclo.getText().trim());
-    config.latenciaRedCiclos = Integer.parseInt(txtLatenciaRed.getText().trim());
-    config.numComputadores = Integer.parseInt(txtNumComp.getText().trim());
-
-    // 2. Computadores
-    javax.swing.table.DefaultTableModel modelComp = (javax.swing.table.DefaultTableModel) tblComputadores.getModel();
-    int filasComp = modelComp.getRowCount();
-    config.computadores = new ConfiguracionSimulacion.ConfigComputador[filasComp];
-    for (int i = 0; i < filasComp; i++) {
-        ConfiguracionSimulacion.ConfigComputador c = new ConfiguracionSimulacion.ConfigComputador();
-        c.id = modelComp.getValueAt(i, 0).toString().trim();
-        c.ramTotal = Integer.parseInt(modelComp.getValueAt(i, 1).toString().trim());
-        c.politicaInicial = modelComp.getValueAt(i, 2).toString().trim();
-        c.quantum = Integer.parseInt(modelComp.getValueAt(i, 3).toString().trim());
-        config.computadores[i] = c;
-    }
-
-    // 3. Buffers
-    javax.swing.table.DefaultTableModel modelBuf = (javax.swing.table.DefaultTableModel) tblBuffers.getModel();
-    int filasBuf = modelBuf.getRowCount();
-    config.buffers = new ConfiguracionSimulacion.ConfigBuffer[filasBuf];
-    for (int i = 0; i < filasBuf; i++) {
-        ConfiguracionSimulacion.ConfigBuffer b = new ConfiguracionSimulacion.ConfigBuffer();
-        b.id = modelBuf.getValueAt(i, 0).toString().trim();
-        b.capacidad = Integer.parseInt(modelBuf.getValueAt(i, 1).toString().trim());
-        b.computadorAnfitrionId = modelBuf.getValueAt(i, 2).toString().trim();
-        config.buffers[i] = b;
-    }
-
-    // 4. Procesos
-    javax.swing.table.DefaultTableModel modelProc = (javax.swing.table.DefaultTableModel) tblProcesos.getModel();
-    int filasProc = modelProc.getRowCount();
-    config.procesos = new ConfiguracionSimulacion.ConfigProceso[filasProc];
-    for (int i = 0; i < filasProc; i++) {
-        ConfiguracionSimulacion.ConfigProceso p = new ConfiguracionSimulacion.ConfigProceso();
-        p.id = modelProc.getValueAt(i, 0).toString().trim();
-        p.nombre = modelProc.getValueAt(i, 1).toString().trim();
-        p.computadorId = modelProc.getValueAt(i, 2).toString().trim();
-        p.tipo = modelProc.getValueAt(i, 3).toString().trim();
-        p.prioridad = Integer.parseInt(modelProc.getValueAt(i, 4).toString().trim());
-        p.memoriaAsignada = Integer.parseInt(modelProc.getValueAt(i, 5).toString().trim());
-        p.deadline = Long.parseLong(modelProc.getValueAt(i, 6).toString().trim());
-        p.tiempoRestanteEjecucion = Integer.parseInt(modelProc.getValueAt(i, 7).toString().trim());
-        
-        Object bufAsoc = modelProc.getValueAt(i, 8);
-        p.bufferAsociadoId = (bufAsoc != null) ? bufAsoc.toString().trim() : "";
-        
-        p.ciclosProducirConsumir = Integer.parseInt(modelProc.getValueAt(i, 9).toString().trim());
-        p.elementosRequeridos = Integer.parseInt(modelProc.getValueAt(i, 10).toString().trim());
-
-        config.procesos[i] = p;
-    }
-
-    return config;
-}
-    
-    /**
-     * Guarda un Archivo JSON con los parámetros recolectados por obtenerConfiguracion
-     * @param evt 
-     */
-    private void btnGuardarConfiguracion(java.awt.event.ActionEvent evt) {
-    try {
-        ConfiguracionSimulacion config = obtenerConfiguracion();
-        javax.swing.JFileChooser seleccionador = new javax.swing.JFileChooser();
-        seleccionador.setDialogTitle("Guardar Configuración de ÁvilaOS (.json)");
-        seleccionador.setSelectedFile(new java.io.File("configuracion_avilaos.json"));
-        int resultado = seleccionador.showSaveDialog(this);
-        if (resultado == javax.swing.JFileChooser.APPROVE_OPTION) {
-            java.io.File archivo = seleccionador.getSelectedFile();
-            String ruta = archivo.getAbsolutePath();
-            if (!ruta.toLowerCase().endsWith(".json")) {
-                ruta += ".json";
-            }
-            GestorJSON gestor = new GestorJSON();
-            gestor.guardarConfiguracion(config, ruta);
-            javax.swing.JOptionPane.showMessageDialog(this,
-                "¡Configuración guardada exitosamente en:\n" + ruta,
-                "Éxito",
-                javax.swing.JOptionPane.INFORMATION_MESSAGE);
-        }
-    } catch (NumberFormatException e) {
-        javax.swing.JOptionPane.showMessageDialog(this,
-            "Error en los datos ingresados: Por favor verifica que los campos numéricos contengan valores válidos.",
-            "Error de Validación",
-            javax.swing.JOptionPane.WARNING_MESSAGE);
-    } catch (Exception e) {
-        javax.swing.JOptionPane.showMessageDialog(this,
-            "Error al guardar el archivo JSON: " + e.getMessage(),
-            "Error al Guardar",
-            javax.swing.JOptionPane.ERROR_MESSAGE);
-    }
-}
-    
-    /**
-     * Actualiza las filas de la tabla de computadores para que coincidan con el numero declarado en la caja de texto
-     */
-    private void actualizarTablaComputadores() {
-    String texto = txtNumComp.getText().trim();
-    if (texto.isEmpty()) {
-        return;
-    }
-    
-    try {
-        int cantidad = Integer.parseInt(texto);
-        if (cantidad <= 0) return;
-
-        javax.swing.table.DefaultTableModel modelo = (javax.swing.table.DefaultTableModel) tblComputadores.getModel();
-        int filasActuales = modelo.getRowCount();
-
-        // Ajustar el número de filas conservando o agregando
-        if (cantidad > filasActuales) {
-            for (int i = filasActuales + 1; i <= cantidad; i++) {
-                modelo.addRow(new Object[]{i, 1024, "FCFS", 0});
-            }
-        } else if (cantidad < filasActuales) {
-            for (int i = filasActuales - 1; i >= cantidad; i--) {
-                modelo.removeRow(i);
-            }
-        }
-    } catch (NumberFormatException e) {
-        // Se ignora mientras el usuario está escribiendo un valor no entero
-    }
-}
-    
-    private void btnMonitoreo(java.awt.event.ActionEvent evt) {
-    try {
-        io.ConfiguracionSimulacion config = obtenerConfiguracion();
-        gui.VistaMonitoreo vistaSimulacion = new gui.VistaMonitoreo(config);
-        vistaSimulacion.setVisible(true);
-        // this.dispose(); 
-
-    } catch (NumberFormatException e) {
-        javax.swing.JOptionPane.showMessageDialog(this,
-            "Error en los datos ingresados: Revisa los campos de las tablas.",
-            "Error de Validación",
-            javax.swing.JOptionPane.WARNING_MESSAGE);
-    } catch (Exception e) {
-        javax.swing.JOptionPane.showMessageDialog(this,
-            "Error al iniciar la simulación: " + e.getMessage(),
-            "Error",
-            javax.swing.JOptionPane.ERROR_MESSAGE);
-    }
-    }
-    
-    private void inicializarTablas() {
-        // Inicializar Buffers con 1 fila
-        javax.swing.table.DefaultTableModel modelBuf = (javax.swing.table.DefaultTableModel) tblBuffers.getModel();
-        modelBuf.setRowCount(0);
-        modelBuf.addRow(new Object[]{"B1", 5, "1"});
-
-        // Inicializar Procesos con 1 fila
-        javax.swing.table.DefaultTableModel modelProc = (javax.swing.table.DefaultTableModel) tblProcesos.getModel();
-        modelProc.setRowCount(0);
-        modelProc.addRow(new Object[]{"P1", "Proceso_1", "1", "CPU_BOUND", 1, 128, 50, 10, "", 0, 0});
-        
-        // Inicializar Computadores con 1 fila
-        javax.swing.table.DefaultTableModel modelComp = (javax.swing.table.DefaultTableModel) tblComputadores.getModel();
-        modelComp.setRowCount(0);
-        modelComp.addRow(new Object[]{1, 1024, "FCFS", 0});
-    }
-
-    private void btnAgregarBuffer(java.awt.event.ActionEvent evt) {
-        javax.swing.table.DefaultTableModel modelo = (javax.swing.table.DefaultTableModel) tblBuffers.getModel();
-        int siguienteNum = modelo.getRowCount() + 1;
-        // Agrega una nueva fila predeterminada
-        modelo.addRow(new Object[]{"B" + siguienteNum, 5, "1"});
-    }
-
-    private void btnQuitarBuffer(java.awt.event.ActionEvent evt) {
-        javax.swing.table.DefaultTableModel modelo = (javax.swing.table.DefaultTableModel) tblBuffers.getModel();
-        int filaSeleccionada = tblBuffers.getSelectedRow();
-        if (modelo.getRowCount() <= 1) {
-            javax.swing.JOptionPane.showMessageDialog(this, 
-                "Debe existir al menos un buffer configurado.", 
-                "Advertencia", javax.swing.JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-        if (filaSeleccionada != -1) {
-            modelo.removeRow(filaSeleccionada);
-        } else {
-            // Si no hay fila seleccionada, remueve la última
-            modelo.removeRow(modelo.getRowCount() - 1);
-        }
-    }
-
-    private void btnAgregarProceso(java.awt.event.ActionEvent evt) {
-        javax.swing.table.DefaultTableModel modelo = (javax.swing.table.DefaultTableModel) tblProcesos.getModel();
-        int siguienteNum = modelo.getRowCount() + 1;
-        modelo.addRow(new Object[]{
-            "P" + siguienteNum, 
-            "Proceso_" + siguienteNum, 
-            "1", 
-            "CPU_BOUND", 
-            1, 
-            128, 
-            50, 
-            10, 
-            "", 
-            0, 
-            0
-        });
-    }
-
-    private void btnQuitarProceso(java.awt.event.ActionEvent evt) {
-        javax.swing.table.DefaultTableModel modelo = (javax.swing.table.DefaultTableModel) tblProcesos.getModel();
-        int filaSeleccionada = tblProcesos.getSelectedRow();
-
-        if (modelo.getRowCount() <= 1) {
-            javax.swing.JOptionPane.showMessageDialog(this, 
-                "Debe existir al menos un proceso configurado en el sistema.", 
-                "Advertencia", javax.swing.JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-
-        if (filaSeleccionada != -1) {
-            modelo.removeRow(filaSeleccionada);
-        } else {
-            // Si no hay fila seleccionada, remueve la última
-            modelo.removeRow(modelo.getRowCount() - 1);
-        }
-    }
-    
     // Variables declaration - do not modify//GEN-BEGIN:variables
-    private javax.swing.JButton CargarArchivo;
-    private javax.swing.JButton GuardarConfiguracion;
-    private javax.swing.JButton Monitoreo;
-    private javax.swing.JButton agregarBuffer;
-    private javax.swing.JButton agregarProceso;
-    private javax.swing.JLabel jLabel1;
-    private javax.swing.JLabel jLabel2;
-    private javax.swing.JLabel jLabel3;
-    private javax.swing.JLabel jLabel4;
-    private javax.swing.JLabel jLabel5;
-    private javax.swing.JLabel jLabel6;
-    private javax.swing.JScrollPane jScrollPane1;
-    private javax.swing.JScrollPane jScrollPane2;
-    private javax.swing.JScrollPane jScrollPane3;
-    private javax.swing.JButton quitarBuffer;
-    private javax.swing.JButton quitarProceso;
-    private javax.swing.JTable tblBuffers;
-    private javax.swing.JTable tblComputadores;
-    private javax.swing.JTable tblProcesos;
-    private javax.swing.JTextField txtDuracionCiclo;
-    private javax.swing.JTextField txtLatenciaRed;
-    private javax.swing.JTextField txtNumComp;
     // End of variables declaration//GEN-END:variables
 }
 
