@@ -15,7 +15,7 @@ import java.util.UUID;
  */
 public class Pcb {
     private final String id;                  // ID único
-    private String nombre;                // Nombre del proceso
+    private String nombre;                    // Nombre del proceso
     private String computadorId;        
     private EstadoProceso estado;
     private ProcesoTipo tipo;
@@ -25,8 +25,8 @@ public class Pcb {
     private long deadline;
     private int tiempoRestanteEjecucion;
     
-    private int programCounter;           // PC: Dirección de la instrucción actual
-    private int memoryAddressRegister;    // MAR: Registro de dirección de memoria
+    private int programCounter;               // PC: Dirección de la instrucción actual
+    private int memoryAddressRegister;        // MAR: Registro de dirección de memoria
     private String bufferAsociadoId;
     private int ciclosProducirConsumir;
     private int elementosRequeridos;
@@ -36,9 +36,11 @@ public class Pcb {
     // Contador de tiempo invertido en Modo Sistema Operativo
     private int tiempoModoSO;
     
-    // NUEVOS CAMPOS PARA PROYECTO 2 (SISTEMA DE ARCHIVOS Y DISCO)
+    // CAMPOS PARA PROYECTO 2 (SISTEMA DE ARCHIVOS Y DISCO)
     private TipoOperacionIO operacionIO;
     private String rutaArchivo;
+    private int bloqueObjetivo;
+    private int cantidadBloques;
 
     public Pcb(String nombre, String computadorId, ProcesoTipo tipo, int prioridad, 
                int memoriaAsignada, long deadline, int tiempoRestanteEjecucion) {
@@ -58,9 +60,11 @@ public class Pcb {
         this.tiempoModoSO = 0;
         this.tiempoEsperaIO = 0;
         
-        // Inicializados en nulo/vacío hasta que se asigne una operación de E/S
+        // Inicializados por defecto para operaciones de E/S
         this.operacionIO = null;
         this.rutaArchivo = "";
+        this.bloqueObjetivo = 0;
+        this.cantidadBloques = 1;
     }
 
     public void incrementarPC() {
@@ -80,9 +84,12 @@ public class Pcb {
         }
     }
     
-    // Método agregado para registrar la contabilidad de tiempo en kernel
     public void incrementarTiempoModoSO(int costo) {
         this.tiempoModoSO += costo;
+    }
+    
+    public boolean tieneOperacionIO() {
+        return this.operacionIO != null;
     }
     
     public int getTiempoModoSO() { return tiempoModoSO; }
@@ -128,10 +135,15 @@ public class Pcb {
     public int getTiempoEsperaIO() { return tiempoEsperaIO; }
     public void setTiempoEsperaIO(int tiempoEsperaIO) { this.tiempoEsperaIO = tiempoEsperaIO; }
 
-    // GETTERS Y SETTERS NUEVOS
     public TipoOperacionIO getOperacionIO() { return operacionIO; }
     public void setOperacionIO(TipoOperacionIO operacionIO) { this.operacionIO = operacionIO; }
     
     public String getRutaArchivo() { return rutaArchivo; }
     public void setRutaArchivo(String rutaArchivo) { this.rutaArchivo = rutaArchivo; }
+
+    public int getBloqueObjetivo() { return bloqueObjetivo; }
+    public void setBloqueObjetivo(int bloqueObjetivo) { this.bloqueObjetivo = Math.max(0, bloqueObjetivo); }
+
+    public int getCantidadBloques() { return cantidadBloques; }
+    public void setCantidadBloques(int cantidadBloques) { this.cantidadBloques = Math.max(1, cantidadBloques); }
 }
