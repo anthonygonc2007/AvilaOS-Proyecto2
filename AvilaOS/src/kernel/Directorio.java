@@ -21,7 +21,7 @@ public class Directorio extends NodoFS {
     public ListaEnlazada<NodoFS> getContenido() { return contenido; }
 
     public void agregarNodo(NodoFS nodo) {
-        if (nodo == null) return;
+        if (nodo == null || nodo == this) return;
         nodo.setPadre(this);
         this.contenido.agregarAlFinal(nodo);
         recalcularTamano();
@@ -51,13 +51,10 @@ public class Directorio extends NodoFS {
         int total = 0;
         for (int i = 0; i < contenido.getTamano(); i++) {
             NodoFS hijo = contenido.obtener(i);
-            if (hijo.isDirectorio()) {
-                ((Directorio) hijo).recalcularTamano();
-            }
             total += hijo.getTamano();
         }
         this.tamano = total;
-        if (this.padre != null) {
+        if (this.padre != null && this.padre != this) {
             this.padre.recalcularTamano();
         }
     }
