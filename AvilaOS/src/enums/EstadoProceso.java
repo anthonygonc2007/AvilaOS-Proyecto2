@@ -16,5 +16,7 @@ public enum EstadoProceso {
     BLOQUEADO_MUTEX,            // Esperando exclusión mutua
     BLOQUEADO_PRODUCTOR_LLENO,  // Productor esperando espacio libre en el buffer
     BLOQUEADO_CONSUMIDOR_VACIO, // Consumidor esperando elemento en el buffer
-    EXIT
+    EXIT,
+    LISTO_SUSPENDIDO,           // NUEVO: Proceso en Swap listo para RAM
+    BLOQUEADO_SUSPENDIDO        // NUEVO: Proceso en Swap esperando I/O
 }
