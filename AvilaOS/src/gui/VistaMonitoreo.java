@@ -336,77 +336,159 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
 
         if (config == null) return;
 
-        spinnerDuracionCiclo.setValue(config.duracionCicloMs);
-        spinnerLatenciaRed.setValue(config.latenciaRedCiclos);
-        RelojGlobal.setDuracionCicloMs(config.duracionCicloMs);
+        int duracionCiclo = 500;
+        int swapBlocks = 32;
+        String politicaDiscoStr = "FIFO";
+        int velocidadCabezal = Math.max(1, config.velocidadCabezal);
 
-        // Instanciar Gestor de Métricas Global
+        if (config.datosProcesos != null && config.datosProcesos.globalConfig != null) {
+            ConfiguracionSimulacion.GlobalConfigJSON gc = config.datosProcesos.globalConfig;
+            if (gc.cycleDurationMs > 0) duracionCiclo = gc.cycleDurationMs;
+            if (gc.swapSizeBlocks >= 0) swapBlocks = gc.swapSizeBlocks;
+            if (gc.initialDiskPolicy != null) politicaDiscoStr = gc.initialDiskPolicy;
+            if (gc.headSpeed != null && gc.headSpeed > 0) velocidadCabezal = gc.headSpeed;
+        }
+
+        spinnerDuracionCiclo.setValue(duracionCiclo);
+        spinnerLatenciaRed.setValue(1);
+        RelojGlobal.setDuracionCicloMs(duracionCiclo);
+
+        // Instanciar Gestor de Métricas Global y Buffers
         gestorMetricasGlobal = new GestorMetricas();
-
-        // Crear Buffers Compartidos en ListaEnlazada
         listaBuffersGlobales = new ListaEnlazada<>();
-        if (config.buffers != null) {
-            for (ConfiguracionSimulacion.ConfigBuffer cb : config.buffers) {
-                BufferAcotado b = new BufferAcotado(cb.id, cb.computadorAnfitrionId, cb.capacidad);
-                listaBuffersGlobales.agregarAlFinal(b);
+
+        // 1. Configurar Disco y Sistema de Archivos desde datosFS
+        int totalBloques = 256;
+        int cabezalInicial = 0;
+        if (config.datosFS != null && config.datosFS.diskConfig != null) {
+            if (config.datosFS.diskConfig.totalBlocks > 0) {
+                totalBloques = config.datosFS.diskConfig.totalBlocks;
             }
+            cabezalInicial = Math.max(0, config.datosFS.diskConfig.initialHead);
         }
 
-        // Crear Computadores
-        int nComp = (config.computadores != null) ? config.computadores.length : 0;
-        listaComputadores = new Computador[nComp];
-        panelesComputadores = new PanelComputadorUI[nComp];
-        seriesComputadoresCPU = new XYSeries[nComp];
-        datasetCPU.removeAllSeries();
-        tabbedComputadores.removeAll();
-
-        for (int i = 0; i < nComp; i++) {
-            ConfiguracionSimulacion.ConfigComputador cc = config.computadores[i];
-            int ram = (cc.ramTotal > 0) ? cc.ramTotal : 2048;
-
-            listaComputadores[i] = new Computador(cc.id, ram, gestorMetricasGlobal, listaBuffersGlobales);
-            if (cc.politicaInicial != null) {
-                listaComputadores[i].setPoliticaPlanificacion(
-                    PoliticaPlanificacion.valueOf(cc.politicaInicial.toUpperCase()), cc.quantum
-                );
-            }
-            
-            seriesComputadoresCPU[i] = new XYSeries("Comp " + cc.id);
-            seriesComputadoresCPU[i].add(0, 0.0);
-            datasetCPU.addSeries(seriesComputadoresCPU[i]);
-
-            PanelComputadorUI panelUI = new PanelComputadorUI(listaComputadores[i]);
-            panelesComputadores[i] = panelUI;
-            tabbedComputadores.addTab("Computador " + cc.id, panelUI);
+        interfaces.IPoliticaDisco politicaDisco;
+        switch (politicaDiscoStr.toUpperCase()) {
+            case "SSTF":
+                politicaDisco = new kernel.PoliticaDiscoSSTF();
+                break;
+            case "SCAN":
+                politicaDisco = new kernel.PoliticaDiscoSCAN();
+                break;
+            case "CSCAN":
+            case "C-SCAN":
+                politicaDisco = new kernel.PoliticaDiscoCSCAN();
+                break;
+            case "FIFO":
+            default:
+                politicaDisco = new kernel.PoliticaDiscoFIFO();
+                break;
         }
 
-        // Cargar Procesos
-        if (config.procesos != null) {
-            for (ConfiguracionSimulacion.ConfigProceso cp : config.procesos) {
-                Pcb pcb = new Pcb(
-                    cp.nombre,
-                    cp.computadorId,
-                    enums.ProcesoTipo.valueOf(cp.tipo.toUpperCase()),
-                    cp.prioridad,
-                    cp.memoriaAsignada,
-                    cp.deadline,
-                    cp.tiempoRestanteEjecucion
-                );
-                pcb.setBufferAsociadoId(cp.bufferAsociadoId);
-                pcb.setCiclosProducirConsumir(cp.ciclosProducirConsumir);
-                pcb.setElementosRequeridos(cp.elementosRequeridos);
+        kernel.Disco disco = new kernel.Disco(totalBloques, swapBlocks, velocidadCabezal, cabezalInicial, politicaDisco);
+        RelojGlobal.registrarObservador(disco);
+        kernel.SistemaArchivos sistemaArchivos = new kernel.SistemaArchivos(disco);
 
-                for (Computador comp : listaComputadores) {
-                    if (comp.getId().equals(cp.computadorId)) {
-                        comp.admitirProceso(pcb);
-                        break;
-                    }
+        if (config.datosFS != null && config.datosFS.fileSystem != null) {
+            for (ConfiguracionSimulacion.NodoFSJSON nodo : config.datosFS.fileSystem) {
+                if (nodo == null || nodo.path == null) continue;
+                String owner = (nodo.owner != null) ? nodo.owner : "admin";
+                String perms = (nodo.permissions != null) ? nodo.permissions : "public";
+                if ("DIRECTORY".equalsIgnoreCase(nodo.type)) {
+                    sistemaArchivos.cargarDirectorioJSON(nodo.path, owner, perms);
+                } else if ("FILE".equalsIgnoreCase(nodo.type)) {
+                    int start = (nodo.startBlock != null) ? nodo.startBlock : -1;
+                    int blocks = (nodo.blocks != null) ? nodo.blocks : 1;
+                    sistemaArchivos.cargarArchivoJSON(nodo.path, start, blocks, owner, perms, "SYS_INIT");
                 }
             }
         }
 
+        // 2. Crear Computador desde datosProcesos.computer
+        int ram = 2048;
+        String politicaCpuStr = "FCFS";
+        int quantum = 2;
+        if (config.datosProcesos != null && config.datosProcesos.computer != null) {
+            ConfiguracionSimulacion.ComputerConfigJSON cc = config.datosProcesos.computer;
+            if (cc.ramCapacity > 0) ram = cc.ramCapacity;
+            if (cc.policy != null) politicaCpuStr = cc.policy;
+            if (cc.quantum > 0) quantum = cc.quantum;
+        }
+
+        listaComputadores = new Computador[1];
+        panelesComputadores = new PanelComputadorUI[1];
+        seriesComputadoresCPU = new XYSeries[1];
+        datasetCPU.removeAllSeries();
+        tabbedComputadores.removeAll();
+
+        Computador comp = new Computador("1", ram, gestorMetricasGlobal, listaBuffersGlobales);
+        comp.setDisco(disco);
+        comp.setSistemaArchivos(sistemaArchivos);
+        try {
+            comp.setPoliticaPlanificacion(PoliticaPlanificacion.valueOf(politicaCpuStr.toUpperCase()), quantum);
+        } catch (IllegalArgumentException ex) {
+            comp.setPoliticaPlanificacion(PoliticaPlanificacion.FCFS, quantum);
+        }
+        listaComputadores[0] = comp;
+
+        seriesComputadoresCPU[0] = new XYSeries("Comp 1");
+        seriesComputadoresCPU[0].add(0, 0.0);
+        datasetCPU.addSeries(seriesComputadoresCPU[0]);
+
+        PanelComputadorUI panelUI = new PanelComputadorUI(comp);
+        panelesComputadores[0] = panelUI;
+        tabbedComputadores.addTab("Computador 1", panelUI);
+
+        // 3. Cargar Procesos desde datosProcesos.processes
+        if (config.datosProcesos != null && config.datosProcesos.processes != null) {
+            for (ConfiguracionSimulacion.ProcessJSON cp : config.datosProcesos.processes) {
+                if (cp == null) continue;
+                int prio = (cp.priority != null) ? cp.priority : 1;
+                int mem = Math.max(1, cp.memory);
+                long dead = (cp.deadline > 0) ? cp.deadline : 100L;
+                int inst = Math.max(1, cp.instructions);
+
+                enums.ProcesoTipo tipoProc = (cp.operation != null && !cp.operation.isEmpty())
+                        ? enums.ProcesoTipo.IO_BOUND
+                        : enums.ProcesoTipo.CPU_BOUND;
+
+                Pcb pcb = new Pcb(cp.name, "1", tipoProc, prio, mem, dead, inst);
+
+                if (cp.operation != null && cp.targetPath != null) {
+                    enums.TipoOperacionIO opIO = mapearOperacionIO(cp.operation);
+                    if (opIO != null) {
+                        sistemaArchivos.prepararOperacionCRUD(
+                            pcb, opIO, cp.targetPath, 1, cp.name,
+                            enums.ModoUsuario.ADMINISTRADOR, "admin"
+                        );
+                    }
+                }
+                comp.admitirProceso(pcb);
+            }
+        }
+
         actualizarVistasGUI();
-        registrarLog("ÁvilaOS preparado con " + nComp + " computadores.");
+        registrarLog("ÁvilaOS preparado con Disco (" + totalBloques + " bloques, Swap: " + swapBlocks + ").");
+    }
+
+    private enums.TipoOperacionIO mapearOperacionIO(String op) {
+        if (op == null) return null;
+        switch (op.trim().toUpperCase()) {
+            case "CREATE":
+            case "CREAR":
+                return enums.TipoOperacionIO.CREAR;
+            case "READ":
+            case "LEER":
+                return enums.TipoOperacionIO.LEER;
+            case "UPDATE":
+            case "ACTUALIZAR":
+                return enums.TipoOperacionIO.ACTUALIZAR;
+            case "DELETE":
+            case "ELIMINAR":
+                return enums.TipoOperacionIO.ELIMINAR;
+            default:
+                return null;
+        }
     }
 
     @Override
