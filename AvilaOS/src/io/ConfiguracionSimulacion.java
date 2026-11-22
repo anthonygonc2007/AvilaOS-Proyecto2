@@ -10,43 +10,55 @@ package io;
  */
 public class ConfiguracionSimulacion {
 
-    // 1. Parámetros Generales del Sistema
-    public int duracionCicloMs;
-    public int latenciaRedCiclos;
-    public int numComputadores;
+public static class ArchivoSistemaArchivosJSON {
+        public DiskConfigJSON diskConfig;
+        public NodoFSJSON[] fileSystem;
+    }
 
-    // 2. Arreglos de Configuración
-    public ConfigComputador[] computadores;
-    public ConfigBuffer[] buffers;
-    public ConfigProceso[] procesos;
- 
+    public static class DiskConfigJSON {
+        public int totalBlocks;
+        public int initialHead;
+    }
 
-    public static class ConfigComputador {
-        public String id;
-        public int ramTotal;
-        public String politicaInicial;
+    public static class NodoFSJSON {
+        public String path;
+        public String type;        // "FILE" o "DIRECTORY"
+        public Integer startBlock; // Opcional en directorios
+        public Integer blocks;     // Opcional en directorios
+        public String owner;
+        public String permissions; // "public" o "private"
+    }
+
+    public static class ArchivoProcesosJSON {
+        public GlobalConfigJSON globalConfig;
+        public ComputerConfigJSON computer;
+        public ProcessJSON[] processes;
+    }
+
+    public static class GlobalConfigJSON {
+        public int cycleDurationMs;
+        public int swapSizeBlocks;
+        public String initialDiskPolicy;
+        public Integer headSpeed;
+    }
+
+    public static class ComputerConfigJSON {
+        public int ramCapacity;
+        public String policy;
         public int quantum;
     }
 
-    public static class ConfigBuffer {
-        public String id;
-        public int capacidad;
-        public String computadorAnfitrionId;
+    public static class ProcessJSON {
+        public String name;
+        public int memory;
+        public long deadline;
+        public int instructions;
+        public String targetPath;
+        public String operation; // "READ", "CREATE", "UPDATE", "DELETE"
+        public Integer priority;
     }
 
-    public static class ConfigProceso {
-        public String id;
-        public String nombre;
-        public String computadorId;
-        public String tipo;
-        public int prioridad;
-        public int memoriaAsignada;
-        public long deadline;
-        public int tiempoRestanteEjecucion;
-        
-        // Atributos específicos según tipo
-        public String bufferAsociadoId;
-        public int ciclosProducirConsumir;
-        public int elementosRequeridos;
-    }
+    public ArchivoSistemaArchivosJSON datosFS;
+    public ArchivoProcesosJSON datosProcesos;
+    public int velocidadCabezal = 1;
 }

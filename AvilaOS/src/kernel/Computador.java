@@ -6,6 +6,7 @@ package kernel;
 
 import enums.EstadoProceso;
 import enums.PoliticaPlanificacion;
+import enums.TipoOperacionIO;
 import estructuras.Cola;
 import estructuras.ListaEnlazada;
 import interfaces.Planificador;
@@ -13,17 +14,13 @@ import metricas.GestorMetricas;
 import interfaces.IClockObserver;
 import core.RelojGlobal;
 
-/**
- * Representa un nodo del clúster (Computador) en ÁvilaOS.
- * Integra la CPU, Memoria RAM, Disco y las colas del sistema operativo.
- * 
- * @author Antho
- */
 public class Computador implements IClockObserver {
     private final String id;
     private final MemoriaRAM memoriaRAM;
     private final Cpu cpu;
     private Disco disco;
+    private SistemaArchivos sistemaArchivos;
+    private final PlanificadorMedianoPlazo planificadorMedianoPlazo;
     private final Semaforo mutexColaDisco;
     private int cicloRelojActual;
     
@@ -49,6 +46,8 @@ public class Computador implements IClockObserver {
         this.listaBuffersGlobales = buffers;
         this.cpu = new Cpu();
         this.disco = null;
+        this.sistemaArchivos = null;
+        this.planificadorMedianoPlazo = new PlanificadorMedianoPlazo();
         this.mutexColaDisco = new Semaforo(1);
         this.cicloRelojActual = 0;
         
@@ -59,16 +58,12 @@ public class Computador implements IClockObserver {
         this.colaListosSuspendidos = new Cola<>();
         this.colaBloqueadosSuspendidos = new Cola<>();
 
-        // Política inicial por defecto
         this.quantum = 2;
         setPoliticaPlanificacion(PoliticaPlanificacion.FCFS, this.quantum);
         
         RelojGlobal.registrarObservador(this);
     }
 
-    /**
-     * Configura y cambia la política de planificación en tiempo de ejecución.
-     */
     public void setPoliticaPlanificacion(PoliticaPlanificacion politica, int quantum) {
         this.politicaActual = politica;
         this.quantum = quantum;
@@ -90,10 +85,6 @@ public class Computador implements IClockObserver {
         }
     }
 
-    /**
-     * Ingresa un proceso al sistema validando la regla de no migración.
-     * El proceso inicia en la cola de NUEVOS.
-     */
     public boolean admitirProceso(Pcb proceso) {
         if (!this.id.equals(proceso.getComputadorId())) {
             System.out.println("ALERTA DE SEGURIDAD: Intento de migración bloqueado. " +
@@ -106,15 +97,14 @@ public class Computador implements IClockObserver {
         proceso.setEstado(EstadoProceso.NEW);
         this.colaNuevos.encolar(proceso);
         
-        // Intentar pasarlo a listo de inmediato si hay memoria
-        intentarAdmitirNuevos();
+        if (this.disco != null) {
+            planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
+        } else {
+            intentarAdmitirNuevos();
+        }
         return true;
     }
 
-    /**
-     * Revisa la cola de nuevos y admite a la cola de listos a aquellos procesos
-     * que puedan caber en la memoria RAM disponible.
-     */
     public void intentarAdmitirNuevos() {
         if (colaNuevos.esVacia()) return;
 
@@ -134,11 +124,13 @@ public class Computador implements IClockObserver {
         }
     }
 
-    /**
-     * Coordina un ciclo de reloj para los componentes de este computador.
-     */
     public void ejecutarCicloReloj(BufferAcotado[] buffers) {
-        intentarAdmitirNuevos();
+        if (this.disco != null) {
+            planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
+        } else {
+            intentarAdmitirNuevos();
+        }
+
         revisarDesbloqueados(); 
         decrementarDeadlines();
         if (planificador != null) {
@@ -149,7 +141,6 @@ public class Computador implements IClockObserver {
             gestorMetricas.registrarCicloCPU();
             Pcb enCpu = cpu.getProcesoEnEjecucion();
 
-            // Flujo Día 2: Proceso con operación de E/S hacia Disco en Modo Sistema Operativo
             if (enCpu.tieneOperacionIO() && this.disco != null) {
                 cpu.setModoSO();
                 enCpu.incrementarTiempoModoSO(1);
@@ -172,14 +163,12 @@ public class Computador implements IClockObserver {
                         }
                     }
 
-                    // Limpiar operación ya despachada y bloquear proceso hasta que Disco complete
                     enCpu.setOperacionIO(null);
                     enCpu.setMotivoBloqueo("E/S");
                     enCpu.setEstado(EstadoProceso.BLOCKED);
                     cpu.setProcesoEnEjecucion(null);
                     colaBloqueados.encolar(enCpu);
                 } else {
-                    // Si el mutex estaba ocupado, queda esperando exclusión mutua
                     cpu.setProcesoEnEjecucion(null);
                     colaBloqueados.encolar(enCpu);
                 }
@@ -191,7 +180,6 @@ public class Computador implements IClockObserver {
                 procesarPcbBuffer(enCpu, buffers);
             } else if (enCpu.getTipo() == enums.ProcesoTipo.IO_BOUND) {
                 cpu.ejecutarCiclo();
-                // Simulación E/S legacy: Cada 4 instrucciones, se bloquea por 3 ciclos
                 if (enCpu.getProgramCounter() % 4 == 0 && enCpu.getEstado() == EstadoProceso.RUNNING) {
                     enCpu.setMotivoBloqueo("ESPERANDO_IO");
                     enCpu.setTiempoEsperaIO(3);
@@ -207,14 +195,17 @@ public class Computador implements IClockObserver {
                 colaTerminados.encolar(enCpu);
                 cpu.setProcesoEnEjecucion(null);
                 gestorMetricas.registrarProcesoCompletado(enCpu, 0, enCpu.getTiempoModoSO());
-                intentarAdmitirNuevos();
+
+                if (this.disco != null) {
+                    planificadorMedianoPlazo.intentarReactivarSuspendidos(this, this.disco, cicloRelojActual);
+                    planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
+                } else {
+                    intentarAdmitirNuevos();
+                }
             }
         }
     }
 
-    /**
-     * Procesa la sincronización si el proceso en CPU es un Productor o Consumidor.
-     */
     private void procesarPcbBuffer(Pcb p, BufferAcotado[] buffers) {
         BufferAcotado buf = buscarBuffer(p.getBufferAsociadoId(), buffers);
         if (buf == null) {
@@ -263,6 +254,8 @@ public class Computador implements IClockObserver {
     private void decrementarDeadlinesCola(Cola<Pcb> cola) {
         if (cola == null || cola.esVacia()) return;
         Cola<Pcb> aux = new Cola<>();
+        boolean ramLiberada = false;
+
         while (!cola.esVacia()) {
             Pcb p = cola.desencolar();
             p.setDeadline(p.getDeadline() - 1);
@@ -271,6 +264,7 @@ public class Computador implements IClockObserver {
                 p.setEstado(EstadoProceso.EXIT);
                 memoriaRAM.liberarProceso(p);
                 colaTerminados.encolar(p);
+                ramLiberada = true;
                 
                 gestorMetricas.registrarDeadlineFallado(); 
                 gestorMetricas.registrarProcesoCompletado(p, 0, p.getTiempoModoSO());
@@ -281,20 +275,29 @@ public class Computador implements IClockObserver {
         while (!aux.esVacia()) {
             cola.encolar(aux.desencolar());
         }
+
+        if (ramLiberada && this.disco != null) {
+            planificadorMedianoPlazo.intentarReactivarSuspendidos(this, this.disco, cicloRelojActual);
+            planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
+        }
     }
 
     private void revisarDesbloqueados() {
-        // 1. Procesar solicitudes de Disco finalizadas:
-        //    BLOCKED -> READY | BLOQUEADO_SUSPENDIDO -> LISTO_SUSPENDIDO
         if (this.disco != null) {
             SolicitudIO completada = disco.extraerSolicitudCompletada();
             while (completada != null) {
-                desbloquearProcesoPorDisco(completada.getIdProceso());
+                TipoOperacionIO op = completada.getOperacion();
+                if (op == TipoOperacionIO.CREAR || op == TipoOperacionIO.LEER ||
+                    op == TipoOperacionIO.ACTUALIZAR || op == TipoOperacionIO.ELIMINAR) {
+                    if (this.sistemaArchivos != null) {
+                        this.sistemaArchivos.confirmarOperacionDisco(completada);
+                    }
+                    desbloquearProcesoPorDisco(completada.getIdProceso());
+                }
                 completada = disco.extraerSolicitudCompletada();
             }
         }
 
-        // 2. Revisar cola de bloqueados por semáforos o simulación legacy
         if (colaBloqueados.esVacia()) return;
         Cola<Pcb> aux = new Cola<>();
         while (!colaBloqueados.esVacia()) {
@@ -323,7 +326,6 @@ public class Computador implements IClockObserver {
     private void desbloquearProcesoPorDisco(String idProceso) {
         if (idProceso == null) return;
 
-        // Buscar primero en colaBloqueados (BLOCKED -> READY)
         Cola<Pcb> auxBloq = new Cola<>();
         boolean encontrado = false;
         while (!colaBloqueados.esVacia()) {
@@ -343,7 +345,6 @@ public class Computador implements IClockObserver {
 
         if (encontrado) return;
 
-        // Buscar en colaBloqueadosSuspendidos (BLOQUEADO_SUSPENDIDO -> LISTO_SUSPENDIDO)
         Cola<Pcb> auxSusp = new Cola<>();
         while (!colaBloqueadosSuspendidos.esVacia()) {
             Pcb p = colaBloqueadosSuspendidos.desencolar();
@@ -377,6 +378,9 @@ public class Computador implements IClockObserver {
     public Cpu getCpu() { return cpu; }
     public Disco getDisco() { return disco; }
     public void setDisco(Disco disco) { this.disco = disco; }
+    public SistemaArchivos getSistemaArchivos() { return sistemaArchivos; }
+    public void setSistemaArchivos(SistemaArchivos sistemaArchivos) { this.sistemaArchivos = sistemaArchivos; }
+    public PlanificadorMedianoPlazo getPlanificadorMedianoPlazo() { return planificadorMedianoPlazo; }
     public Cola<Pcb> getColaNuevos() { return colaNuevos; }
     public Cola<Pcb> getColaListos() { return colaListos; }
     public Cola<Pcb> getColaBloqueados() { return colaBloqueados; }

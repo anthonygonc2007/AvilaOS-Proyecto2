@@ -16,7 +16,6 @@ public class SistemaArchivos {
         "#1ABC9C", "#F1C40F", "#E74C3C", "#3498DB"
     };
 
-    // Registro interno de operaciones pendientes de confirmación tras completar E/S en Disco
     public static class OperacionPendiente {
         public final String idProceso;
         public final TipoOperacionIO operacion;
@@ -42,7 +41,7 @@ public class SistemaArchivos {
     private final Disco disco;
     private final ListaEnlazada<Archivo> tablaAsignacion;
     private final ListaEnlazada<OperacionPendiente> operacionesPendientes;
-    private final Semaforo mutexFS;
+    private final GestorConcurrencia gestorConcurrencia;
     private final Pcb pcbSistema;
     private int indiceColor;
 
@@ -51,7 +50,9 @@ public class SistemaArchivos {
         this.raiz = new Directorio("/", LocalDate.now().toString(), "admin", true);
         this.tablaAsignacion = new ListaEnlazada<>();
         this.operacionesPendientes = new ListaEnlazada<>();
-        this.mutexFS = new Semaforo(1);
+        this.gestorConcurrencia = (disco != null && disco.getGestorConcurrencia() != null)
+                ? disco.getGestorConcurrencia()
+                : new GestorConcurrencia();
         this.pcbSistema = new Pcb("KERNEL_FS", "0", enums.ProcesoTipo.CPU_BOUND, 0, 0, Long.MAX_VALUE, 1);
         this.indiceColor = 0;
     }
@@ -60,18 +61,23 @@ public class SistemaArchivos {
         String rutaNorm = normalizarRuta(ruta);
         if ("/".equals(rutaNorm)) return true;
 
-        String rutaPadre = obtenerRutaPadre(rutaNorm);
-        String nombre = obtenerNombreBase(rutaNorm);
-        Directorio dirPadre = asegurarRutaDirectorios(rutaPadre, owner, true);
-        if (dirPadre == null) return false;
+        gestorConcurrencia.entrarArbolDirectorios(pcbSistema);
+        try {
+            String rutaPadre = obtenerRutaPadre(rutaNorm);
+            String nombre = obtenerNombreBase(rutaNorm);
+            Directorio dirPadre = asegurarRutaDirectorios(rutaPadre, owner, true);
+            if (dirPadre == null) return false;
 
-        NodoFS existente = dirPadre.buscarHijo(nombre);
-        if (existente != null) return existente.isDirectorio();
+            NodoFS existente = dirPadre.buscarHijo(nombre);
+            if (existente != null) return existente.isDirectorio();
 
-        boolean esPublico = !"private".equalsIgnoreCase(permissions);
-        Directorio nuevo = new Directorio(nombre, LocalDate.now().toString(), owner, esPublico);
-        dirPadre.agregarNodo(nuevo);
-        return true;
+            boolean esPublico = !"private".equalsIgnoreCase(permissions);
+            Directorio nuevo = new Directorio(nombre, LocalDate.now().toString(), owner, esPublico);
+            dirPadre.agregarNodo(nuevo);
+            return true;
+        } finally {
+            gestorConcurrencia.salirArbolDirectorios(pcbSistema);
+        }
     }
 
     public synchronized boolean cargarArchivoJSON(String ruta, int startBlock, int cantidadBloques,
@@ -80,65 +86,65 @@ public class SistemaArchivos {
         String rutaPadre = obtenerRutaPadre(rutaNorm);
         String nombre = obtenerNombreBase(rutaNorm);
 
-        Directorio dirPadre = asegurarRutaDirectorios(rutaPadre, owner, true);
-        if (dirPadre == null || dirPadre.buscarHijo(nombre) != null) return false;
+        gestorConcurrencia.entrarArbolDirectorios(pcbSistema);
+        gestorConcurrencia.entrarTablaAsignacion(pcbSistema);
+        try {
+            Directorio dirPadre = asegurarRutaDirectorios(rutaPadre, owner, true);
+            if (dirPadre == null || dirPadre.buscarHijo(nombre) != null) return false;
 
-        boolean esPublico = !"private".equalsIgnoreCase(permissions);
-        String color = siguienteColor();
-        Archivo archivo = new Archivo(nombre, LocalDate.now().toString(), extraerExtension(nombre),
-                                      owner, esPublico, procesoCreador, color);
+            boolean esPublico = !"private".equalsIgnoreCase(permissions);
+            String color = siguienteColor();
+            Archivo archivo = new Archivo(nombre, LocalDate.now().toString(), extraerExtension(nombre),
+                                          owner, esPublico, procesoCreador, color);
 
-        // Si el JSON trae startBlock válido, intentar asignar desde startBlock; si no, buscar bloques libres
-        int asignados = 0;
-        if (startBlock >= 0 && startBlock + cantidadBloques <= disco.getLimiteArchivos()) {
-            boolean rangoLibre = true;
-            for (int b = startBlock; b < startBlock + cantidadBloques; b++) {
-                if (disco.getBloque(b).isOcupado()) {
-                    rangoLibre = false;
-                    break;
+            int asignados = 0;
+            if (startBlock >= 0 && startBlock + cantidadBloques <= disco.getLimiteArchivos()) {
+                boolean rangoLibre = true;
+                for (int b = startBlock; b < startBlock + cantidadBloques; b++) {
+                    if (disco.getBloque(b).isOcupado()) {
+                        rangoLibre = false;
+                        break;
+                    }
+                }
+                if (rangoLibre) {
+                    for (int b = startBlock; b < startBlock + cantidadBloques; b++) {
+                        Bloque bloque = disco.getBloque(b);
+                        bloque.setOcupado(true);
+                        bloque.setContenido(nombre);
+                        bloque.setColorHex(color);
+                        archivo.agregarBloque(bloque);
+                        asignados++;
+                    }
                 }
             }
-            if (rangoLibre) {
-                for (int b = startBlock; b < startBlock + cantidadBloques; b++) {
-                    Bloque bloque = disco.getBloque(b);
+
+            if (asignados == 0 && cantidadBloques > 0) {
+                if (disco.contarBloquesLibresArchivos() < cantidadBloques) {
+                    return false;
+                }
+                for (int i = 0; i < cantidadBloques; i++) {
+                    int idLibre = disco.buscarBloqueLibreArchivos();
+                    if (idLibre == -1) {
+                        liberarCadenaBloques(archivo);
+                        return false;
+                    }
+                    Bloque bloque = disco.getBloque(idLibre);
                     bloque.setOcupado(true);
                     bloque.setContenido(nombre);
                     bloque.setColorHex(color);
                     archivo.agregarBloque(bloque);
-                    asignados++;
                 }
             }
-        }
 
-        // Fallback: asignación encadenada no contigua en cualquier bloque libre de la zona de archivos
-        if (asignados == 0 && cantidadBloques > 0) {
-            if (disco.contarBloquesLibresArchivos() < cantidadBloques) {
-                return false;
-            }
-            for (int i = 0; i < cantidadBloques; i++) {
-                int idLibre = disco.buscarBloqueLibreArchivos();
-                if (idLibre == -1) {
-                    liberarCadenaBloques(archivo);
-                    return false;
-                }
-                Bloque bloque = disco.getBloque(idLibre);
-                bloque.setOcupado(true);
-                bloque.setContenido(nombre);
-                bloque.setColorHex(color);
-                archivo.agregarBloque(bloque);
-            }
+            dirPadre.agregarNodo(archivo);
+            tablaAsignacion.agregarAlFinal(archivo);
+            return true;
+        } finally {
+            gestorConcurrencia.salirTablaAsignacion(pcbSistema);
+            gestorConcurrencia.salirArbolDirectorios(pcbSistema);
         }
-
-        dirPadre.agregarNodo(archivo);
-        tablaAsignacion.agregarAlFinal(archivo);
-        return true;
     }
 
-    /**
-     * Valida permisos y configura el Pcb con operacionIO, rutaArchivo, bloqueObjetivo y cantidadBloques
-     * antes de encolarlo en Computador.admitirProceso(pcb).
-     * Retorna null si todo es válido, o un mensaje descriptivo de rechazo si no está permitido.
-     */
     public synchronized String prepararOperacionCRUD(Pcb pcb, TipoOperacionIO operacion, String rutaObjetivo,
                                                      int tamanoBloquesCrear, String nuevoNombre,
                                                      ModoUsuario modoUsuario, String usuarioActivo) {
@@ -150,7 +156,8 @@ public class SistemaArchivos {
         boolean esAdmin = (modoUsuario == ModoUsuario.ADMINISTRADOR);
         String user = (usuarioActivo != null && !usuarioActivo.isEmpty()) ? usuarioActivo : "user1";
 
-        mutexFS.semWait(pcbSistema, "MUTEX_FS");
+        gestorConcurrencia.entrarArbolDirectorios(pcb);
+        gestorConcurrencia.entrarTablaAsignacion(pcb);
         try {
             switch (operacion) {
                 case CREAR: {
@@ -162,17 +169,19 @@ public class SistemaArchivos {
                     }
                     Directorio dirPadre = (Directorio) nodoPadre;
 
-                    // En modo usuario solo puede crear dentro de sus propios directorios
                     if (!esAdmin && !dirPadre.getOwner().equals(user)) {
                         return "Permiso denegado: el usuario '" + user + "' no puede crear archivos en '" + rutaPadre + "' (dueño: " + dirPadre.getOwner() + ").";
                     }
                     if (dirPadre.buscarHijo(nombre) != null) {
                         return "Ya existe un elemento con el nombre '" + nombre + "' en '" + rutaPadre + "'.";
                     }
+                    if (!gestorConcurrencia.adquirirEscritura(rutaNorm, pcb.getId())) {
+                        return "Recurso bloqueado por concurrencia: otro proceso está operando sobre '" + rutaNorm + "'.";
+                    }
 
-                    // Si tamanoBloquesCrear <= 0, se trata de creación de Directorio (1 bloque lógico de metadatos en disco)
                     if (tamanoBloquesCrear <= 0) {
                         if (!esAdmin) {
+                            gestorConcurrencia.liberarArchivo(rutaNorm, pcb.getId());
                             return "Permiso denegado: solo el Administrador puede crear directorios.";
                         }
                         pcb.setOperacionIO(TipoOperacionIO.CREAR);
@@ -186,11 +195,11 @@ public class SistemaArchivos {
                     }
 
                     if (disco.contarBloquesLibresArchivos() < tamanoBloquesCrear) {
+                        gestorConcurrencia.liberarArchivo(rutaNorm, pcb.getId());
                         return "Espacio insuficiente en disco: se requieren " + tamanoBloquesCrear +
                                " bloques y solo hay " + disco.contarBloquesLibresArchivos() + " libres.";
                     }
 
-                    // Pre-reservar cadena de bloques enlazados para garantizar exclusión
                     String color = siguienteColor();
                     Archivo preArchivo = new Archivo(nombre, LocalDate.now().toString(), extraerExtension(nombre),
                                                      esAdmin ? "admin" : user, esAdmin, pcb.getNombre(), color);
@@ -224,6 +233,9 @@ public class SistemaArchivos {
                     if (!esAdmin && !arch.isPublico() && !arch.getOwner().equals(user)) {
                         return "Permiso denegado: el archivo '" + rutaNorm + "' es privado y pertenece a '" + arch.getOwner() + "'.";
                     }
+                    if (!gestorConcurrencia.adquirirLectura(rutaNorm, pcb.getId())) {
+                        return "Archivo bloqueado para lectura: '" + rutaNorm + "' tiene una escritura exclusiva en curso.";
+                    }
 
                     pcb.setOperacionIO(TipoOperacionIO.LEER);
                     pcb.setRutaArchivo(rutaNorm);
@@ -248,6 +260,9 @@ public class SistemaArchivos {
                     }
                     if (nuevoNombre == null || nuevoNombre.trim().isEmpty() || nuevoNombre.contains("/")) {
                         return "El nuevo nombre indicado no es válido.";
+                    }
+                    if (!gestorConcurrencia.adquirirEscritura(rutaNorm, pcb.getId())) {
+                        return "Archivo bloqueado para actualización: '" + rutaNorm + "' está siendo leído o modificado.";
                     }
 
                     int bloqueObj = 0;
@@ -279,6 +294,9 @@ public class SistemaArchivos {
                     if (!esAdmin && !nodo.getOwner().equals(user)) {
                         return "Permiso denegado: solo el administrador o el dueño ('" + nodo.getOwner() + "') puede eliminar '" + rutaNorm + "'.";
                     }
+                    if (!gestorConcurrencia.adquirirEscritura(rutaNorm, pcb.getId())) {
+                        return "Archivo bloqueado para eliminación: '" + rutaNorm + "' está en uso por otro proceso.";
+                    }
 
                     int bloqueObj = 0;
                     int cantBloques = Math.max(1, nodo.getTamano());
@@ -300,13 +318,11 @@ public class SistemaArchivos {
                     return "Operación no soportada por el Sistema de Archivos.";
             }
         } finally {
-            mutexFS.semSignal(pcbSistema);
+            gestorConcurrencia.salirTablaAsignacion(pcb);
+            gestorConcurrencia.salirArbolDirectorios(pcb);
         }
     }
 
-    /**
-     * Debe invocarse cuando Disco completa una SolicitudIO de tipo CREAR, LEER, ACTUALIZAR o ELIMINAR.
-     */
     public synchronized String confirmarOperacionDisco(SolicitudIO solicitud) {
         if (solicitud == null) return "";
 
@@ -314,7 +330,8 @@ public class SistemaArchivos {
         TipoOperacionIO tipo = (op != null) ? op.operacion : solicitud.getOperacion();
         String ruta = (op != null) ? op.rutaObjetivo : normalizarRuta(solicitud.getRutaArchivo());
 
-        mutexFS.semWait(pcbSistema, "MUTEX_FS");
+        gestorConcurrencia.entrarArbolDirectorios(pcbSistema);
+        gestorConcurrencia.entrarTablaAsignacion(pcbSistema);
         try {
             switch (tipo) {
                 case CREAR: {
@@ -378,7 +395,9 @@ public class SistemaArchivos {
                     return "";
             }
         } finally {
-            mutexFS.semSignal(pcbSistema);
+            gestorConcurrencia.liberarArchivo(ruta, solicitud.getIdProceso());
+            gestorConcurrencia.salirTablaAsignacion(pcbSistema);
+            gestorConcurrencia.salirArbolDirectorios(pcbSistema);
         }
     }
 
@@ -423,10 +442,6 @@ public class SistemaArchivos {
         return null;
     }
 
-    /**
-     * Verifica la integridad referencial entre los bloques enlazados del Disco
-     * y los archivos registrados en el árbol y la tabla de asignación.
-     */
     public synchronized boolean verificarIntegridadReferencial() {
         int bloquesContadosEnArbol = 0;
 
@@ -530,4 +545,5 @@ public class SistemaArchivos {
     public Directorio getRaiz() { return raiz; }
     public ListaEnlazada<Archivo> getTablaAsignacion() { return tablaAsignacion; }
     public Disco getDisco() { return disco; }
+    public GestorConcurrencia getGestorConcurrencia() { return gestorConcurrencia; }
 }

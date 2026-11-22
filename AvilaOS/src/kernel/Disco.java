@@ -22,6 +22,7 @@ public class Disco implements IClockObserver {
 
     private final ListaEnlazada<SolicitudIO> colaES;
     private final ListaEnlazada<SolicitudIO> solicitudesCompletadas;
+    private final GestorConcurrencia gestorConcurrencia;
 
     private SolicitudIO solicitudActiva;
     private boolean enTransferencia;
@@ -45,6 +46,7 @@ public class Disco implements IClockObserver {
 
         this.colaES = new ListaEnlazada<>();
         this.solicitudesCompletadas = new ListaEnlazada<>();
+        this.gestorConcurrencia = new GestorConcurrencia();
         this.solicitudActiva = null;
         this.enTransferencia = false;
         this.ticksTransferenciaRestantes = 0;
@@ -52,17 +54,22 @@ public class Disco implements IClockObserver {
     }
 
     @Override
-    public void tick(int cicloActual) {
-        // 1. Si no hay solicitud activa, seleccionar la siguiente según la política
+    public synchronized void tick(int cicloActual) {
+        // 1. Si no hay solicitud activa, seleccionar la siguiente según la política con exclusión mutua
         if (solicitudActiva == null) {
-            if (colaES.esVacia()) {
-                return;
+            gestorConcurrencia.entrarColaES(null);
+            try {
+                if (colaES.esVacia()) {
+                    return;
+                }
+                solicitudActiva = politica.seleccionarSiguiente(colaES, cabezalActual, haciaArriba);
+                if (solicitudActiva == null) {
+                    return;
+                }
+                colaES.eliminar(solicitudActiva);
+            } finally {
+                gestorConcurrencia.salirColaES(null);
             }
-            solicitudActiva = politica.seleccionarSiguiente(colaES, cabezalActual, haciaArriba);
-            if (solicitudActiva == null) {
-                return;
-            }
-            colaES.eliminar(solicitudActiva);
             ticksTransferenciaRestantes = Math.max(1, solicitudActiva.getCantidadBloques());
             enTransferencia = (cabezalActual == solicitudActiva.getBloqueObjetivo());
         }
@@ -99,21 +106,85 @@ public class Disco implements IClockObserver {
         }
     }
 
-    // --- Gestión de cola de E/S ---
+    // --- Gestión concurrente de cola de E/S ---
 
-    public void agregarSolicitud(SolicitudIO solicitud) {
-        if (solicitud != null) {
+    public synchronized void agregarSolicitud(SolicitudIO solicitud) {
+        if (solicitud == null) return;
+        gestorConcurrencia.entrarColaES(null);
+        try {
             colaES.agregarAlFinal(solicitud);
+        } finally {
+            gestorConcurrencia.salirColaES(null);
         }
     }
 
-    public SolicitudIO extraerSolicitudCompletada() {
+    public synchronized SolicitudIO extraerSolicitudCompletada() {
         if (solicitudesCompletadas.esVacia()) {
             return null;
         }
         SolicitudIO completada = solicitudesCompletadas.obtener(0);
         solicitudesCompletadas.eliminar(completada);
         return completada;
+    }
+
+    // --- Escritura y Liberación exclusiva en Zona Reservada de Swap ---
+
+    /**
+     * Escribe un proceso suspendido exclusivamente en la partición reservada de Swap
+     * [limiteArchivos .. totalBloques - 1], bloqueando cualquier invasión hacia la zona de archivos.
+     * Retorna el bloque inicial asignado en Swap, o -1 si no hay espacio suficiente.
+     */
+    public synchronized int escribirProcesoEnSwap(String idProceso, int cantidadBloques) {
+        int requeridos = Math.max(1, cantidadBloques);
+        if (idProceso == null || contarBloquesLibresSwap() < requeridos) {
+            return -1;
+        }
+
+        ListaEnlazada<Bloque> asignados = new ListaEnlazada<>();
+        for (int i = 0; i < requeridos; i++) {
+            int idLibre = buscarBloqueLibreSwap();
+            if (idLibre == -1 || !esBloqueDeSwap(idLibre)) {
+                for (int j = 0; j < asignados.getTamano(); j++) {
+                    liberarBloqueSwap(asignados.obtener(j).getId());
+                }
+                return -1;
+            }
+            Bloque b = bloques[idLibre];
+            b.setOcupado(true);
+            b.setContenido("SWAP-" + idProceso);
+            b.setColorHex("#E74C3C");
+            if (!asignados.esVacia()) {
+                asignados.obtener(asignados.getTamano() - 1).setSiguienteBloque(b.getId());
+            }
+            b.setSiguienteBloque(-1);
+            asignados.agregarAlFinal(b);
+        }
+        return asignados.obtener(0).getId();
+    }
+
+    /**
+     * Libera todos los bloques de Swap pertenecientes a un proceso reactivado o finalizado.
+     * Ignora cualquier bloque fuera de la zona de Swap para proteger los archivos.
+     */
+    public synchronized int liberarProcesoDeSwap(String idProceso) {
+        if (idProceso == null) return 0;
+        String marca = "SWAP-" + idProceso;
+        int liberados = 0;
+        for (int i = limiteArchivos; i < totalBloques; i++) {
+            if (bloques[i].isOcupado() && marca.equals(bloques[i].getContenido())) {
+                bloques[i].limpiar();
+                liberados++;
+            }
+        }
+        return liberados;
+    }
+
+    public synchronized boolean liberarBloqueSwap(int idBloque) {
+        if (!esBloqueDeSwap(idBloque)) {
+            return false; // Bloqueo estricto: no invadir zona de archivos
+        }
+        bloques[idBloque].limpiar();
+        return true;
     }
 
     // --- Partición física estricta (Archivos vs Swap) ---
@@ -171,7 +242,7 @@ public class Disco implements IClockObserver {
         return bloques[idBloque];
     }
 
-    public void liberarBloque(int idBloque) {
+    public synchronized void liberarBloque(int idBloque) {
         if (idBloque >= 0 && idBloque < totalBloques) {
             bloques[idBloque].limpiar();
         }
@@ -193,4 +264,5 @@ public class Disco implements IClockObserver {
     public SolicitudIO getSolicitudActiva() { return solicitudActiva; }
     public boolean isEnTransferencia() { return enTransferencia; }
     public int getDesplazamientoTotal() { return desplazamientoTotal; }
+    public GestorConcurrencia getGestorConcurrencia() { return gestorConcurrencia; }
 }
