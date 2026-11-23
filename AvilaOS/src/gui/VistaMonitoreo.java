@@ -5,30 +5,36 @@
 package gui;
 
 import core.RelojGlobal;
+import enums.ModoEjecucion;
+import enums.ModoUsuario;
+import enums.PoliticaDisco;
 import enums.PoliticaPlanificacion;
+import enums.ProcesoTipo;
+import enums.TipoOperacionIO;
 import estructuras.Cola;
 import estructuras.ListaEnlazada;
 import interfaces.IClockObserver;
+import interfaces.IPoliticaDisco;
 import io.ConfiguracionSimulacion;
-import kernel.BufferAcotado;
-import kernel.Computador;
-import kernel.Cpu;
-import kernel.Pcb;
+import io.GestorJSON;
+import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.io.File;
+import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
+import kernel.*;
 import metricas.GestorMetricas;
-
 import org.jfree.chart.ChartFactory;
 import org.jfree.chart.ChartPanel;
 import org.jfree.chart.JFreeChart;
+import org.jfree.chart.plot.CategoryPlot;
 import org.jfree.chart.plot.PlotOrientation;
 import org.jfree.chart.plot.XYPlot;
 import org.jfree.chart.renderer.xy.XYLineAndShapeRenderer;
+import org.jfree.data.category.DefaultCategoryDataset;
 import org.jfree.data.xy.XYSeries;
 import org.jfree.data.xy.XYSeriesCollection;
-
-import javax.swing.*;
-import javax.swing.table.DefaultTableModel;
-import java.awt.*;
-import java.awt.event.ActionEvent;
 
 /**
  *
@@ -45,39 +51,67 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
     private static final Color COLOR_ACCENT_BLUE = new Color(51, 153, 255);
     private static final Color COLOR_ACCENT_GREEN = new Color(46, 204, 113);
     private static final Color COLOR_ACCENT_ORANGE = new Color(230, 126, 34);
+    private static final Color COLOR_ACCENT_PURPLE = new Color(155, 89, 182);
     
-    private static final java.util.logging.Logger logger = java.util.logging.Logger.getLogger(VistaMonitoreo.class.getName());
-    private JLabel lblRelojCiclos;
-    private JLabel lblEstadoSimulacion;
-    private JTextArea txtLogEventos;
-    private JSpinner spinnerDuracionCiclo;
-    private JSpinner spinnerLatenciaRed;
-    private JTable tblBuffersEstado;
-    private DefaultTableModel modelBuffers;
-
-    // Métricas en la GUI
-    private JLabel lblThroughput;
-    private JLabel lblUtilizacionCPU;
-    private JLabel lblTiempoRespuesta;
-    private JLabel lblCumplimientoDeadlines;
-    private JLabel lblIndiceEquidad;
-    private JLabel lblProdCons;
-    
-    // Componentes de la Gráfica JFreeChart
-    private XYSeriesCollection datasetCPU;
-    private XYSeries[] seriesComputadoresCPU;
-    private JFreeChart chartCPU;
-
+// Núcleo del Sistema Operativo (1 único Computador + Disco + SistemaArchivos)
     private ConfiguracionSimulacion configuracionActual;
-    private Computador[] listaComputadores;
-    private ListaEnlazada<BufferAcotado> listaBuffersGlobales;
+    private Computador computador;
+    private Disco disco;
+    private SistemaArchivos sistemaArchivos;
     private GestorMetricas gestorMetricasGlobal;
 
-    private JTabbedPane tabbedComputadores;
-    private PanelComputadorUI[] panelesComputadores;
+    // Estado de seguimiento para Bitácora en tiempo real
+    private int ultimoCabezalRegistrado = -1;
+    private int ultimasCompletadasDisco = 0;
+    private int ultimosSuspendidosCount = 0;
+
+    // Controles Superiores y Telemetría
+    private JLabel lblRelojCiclos;
+    private JLabel lblEstadoSimulacion;
+    private JLabel lblCpuInfo;
+    private JLabel lblRamInfo;
+    private JLabel lblSwapInfo;
+    private JLabel lblCabezalInfo;
+
+    private JButton btnIniciar;
+    private JButton btnPausar;
+    private JSpinner spinnerDuracionCiclo;
+    private JComboBox<ModoUsuario> cbModoUsuario;
+    private JComboBox<String> cbUsuarioActivo;
+    private JComboBox<PoliticaPlanificacion> cbPoliticaCPU;
+    private JComboBox<PoliticaDisco> cbPoliticaDisco;
+
+    // Paneles Especializados (Días 2 y 3)
+    private PanelSistemaArchivos panelFS;
+    private PanelMapaDisco panelDisco;
+
+    // Tablas de las 6 Colas de Procesos
+    private DefaultTableModel modelNuevos;
+    private DefaultTableModel modelListos;
+    private DefaultTableModel modelBloqueados;
+    private DefaultTableModel modelListosSusp;
+    private DefaultTableModel modelBloqSusp;
+    private DefaultTableModel modelTerminados;
+
+    // Métricas en vivo (Disco, Swap y CPU)
+    private JLabel lblDesplazamientoTotal;
+    private JLabel lblSolicitudesAtendidas;
+    private JLabel lblEsperaPromedioES;
+    private JLabel lblRespuestaPromedioES;
+    private JLabel lblUtilizacionCPU;
+    private JLabel lblThroughput;
+    private JLabel lblDeadlines;
+    private JLabel lblIntegridadFS;
+
+    // Gráficas JFreeChart (Día 4)
+    private XYSeries serieCabezal;
+    private DefaultCategoryDataset datasetPoliticas;
+
+    // Bitácora de Eventos (Issue #14)
+    private JTextArea txtLogEventos;
 
     public VistaMonitoreo() {
-        initComponentsCustom();
+        initCustomUI();
     }
 
     public VistaMonitoreo(ConfiguracionSimulacion config) {
@@ -85,327 +119,427 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
         inicializarSimulacion(config);
     }
 
-    private void initComponentsCustom() {
-        setTitle("ÁvilaOS - Vista 2: Dashboard de Monitoreo y Simulación Distribuida");
+    private void initCustomUI() {
+        setTitle("ÁvilaOS - Dashboard de Simulación: Sistema de Archivos, Disco y Planificación");
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        setSize(1350, 850);
+        setSize(1420, 880);
         setLocationRelativeTo(null);
         getContentPane().setBackground(COLOR_BG);
-        getContentPane().setLayout(new BorderLayout(10, 10));
+        getContentPane().setLayout(new BorderLayout(8, 8));
 
-        // 1. Header Superior
-        JPanel panelHeader = crearPanelHeader();
-        getContentPane().add(panelHeader, BorderLayout.NORTH);
+        // 1. HEADER SUPERIOR: CONTROLES, SELECTORES EN CALIENTE Y BARRA DE TELEMETRÍA
+        getContentPane().add(crearPanelSuperior(), BorderLayout.NORTH);
 
-        // 2. Panel Central Dividido
-        JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
-        mainSplit.setResizeWeight(0.65);
-        mainSplit.setBackground(COLOR_BG);
-        mainSplit.setBorder(null);
+        // 2. PANEL CENTRAL: PESTAÑAS DE TRABAJO
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.setBackground(COLOR_PANEL_BG);
+        tabs.setForeground(COLOR_TEXT_MAIN);
+        tabs.setFont(new Font("Segoe UI", Font.BOLD, 12));
 
-        tabbedComputadores = new JTabbedPane();
-        tabbedComputadores.setBackground(COLOR_PANEL_BG);
-        tabbedComputadores.setForeground(COLOR_TEXT_MAIN);
-        mainSplit.setLeftComponent(tabbedComputadores);
+        // Pestaña 1: Explorador de Archivos (JTree + Tabla Asignación) y Mapa de Bloques del Disco
+        JSplitPane splitFSyDisco = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
+        splitFSyDisco.setResizeWeight(0.45);
+        splitFSyDisco.setBackground(COLOR_BG);
+        splitFSyDisco.setBorder(null);
 
-        JPanel panelDerecho = crearPanelLateralDerecho();
-        mainSplit.setRightComponent(panelDerecho);
+        panelFS = new PanelSistemaArchivos();
+        panelDisco = new PanelMapaDisco();
+        splitFSyDisco.setLeftComponent(panelFS);
+        splitFSyDisco.setRightComponent(panelDisco);
+        tabs.addTab("Sistema de Archivos y Mapa de Disco", splitFSyDisco);
 
-        getContentPane().add(mainSplit, BorderLayout.CENTER);
+        // Pestaña 2: Las 6 Colas de Procesos (incluyendo Swap: Listo/Susp y Bloqueado/Susp)
+        tabs.addTab("Colas de Procesos (6 Estados) y Swap", crearPanelColas());
 
-        // 3. Footer / Barra de Estado
-        JPanel panelFooter = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        panelFooter.setBackground(COLOR_PANEL_BG);
-        lblEstadoSimulacion = new JLabel("Estado: Configuración cargada. Listo para iniciar.");
-        lblEstadoSimulacion.setForeground(COLOR_TEXT_MUTED);
-        panelFooter.add(lblEstadoSimulacion);
-        getContentPane().add(panelFooter, BorderLayout.SOUTH);
+        // Pestaña 3: Métricas en Vivo y Gráficas JFreeChart (Día 4)
+        tabs.addTab("Métricas de Disco, Cabezal y Políticas", crearPanelMetricasYGraficas());
+
+        getContentPane().add(tabs, BorderLayout.CENTER);
+
+        // 3. PANEL INFERIOR: BITÁCORA DE EVENTOS + BARRA DE ESTADO
+        getContentPane().add(crearPanelInferiorLog(), BorderLayout.SOUTH);
     }
 
-    private JPanel crearPanelHeader() {
-        JPanel header = new JPanel(new BorderLayout(15, 0));
+    private JPanel crearPanelSuperior() {
+        JPanel contenedor = new JPanel(new BorderLayout(0, 4));
+        contenedor.setBackground(COLOR_BG);
+
+        // Fila 1: Botones de ejecución y selectores en tiempo real
+        JPanel header = new JPanel(new BorderLayout(8, 0));
         header.setBackground(COLOR_PANEL_BG);
-        header.setBorder(BorderFactory.createEmptyBorder(10, 15, 10, 15));
+        header.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
 
-        JPanel pnlTitle = new JPanel(new GridLayout(2, 1));
-        pnlTitle.setOpaque(false);
-        JLabel title = new JLabel("ÁVILA OS - CLÚSTER DE SISTEMAS OPERATIVOS DISTRIBUIDOS");
-        title.setFont(new Font("Segoe UI", Font.BOLD, 15));
-        title.setForeground(COLOR_ACCENT_BLUE);
+        JPanel pnlBotones = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        pnlBotones.setOpaque(false);
 
-        lblRelojCiclos = new JLabel("Reloj Global del Sistema: Ciclo 0");
-        lblRelojCiclos.setFont(new Font("Segoe UI", Font.BOLD, 13));
-        lblRelojCiclos.setForeground(COLOR_TEXT_MAIN);
-
-        pnlTitle.add(title);
-        pnlTitle.add(lblRelojCiclos);
-        header.add(pnlTitle, BorderLayout.WEST);
-
-        // Controles de Simulación
-        JPanel pnlControles = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 0));
-        pnlControles.setOpaque(false);
-
-        JButton btnIniciar = crearBotonEstilizado("Iniciar Simulación", COLOR_ACCENT_GREEN);
-        JButton btnPausar = crearBotonEstilizado("Pausar", COLOR_ACCENT_ORANGE);
-        JButton btnReiniciar = crearBotonEstilizado("Reiniciar", COLOR_CARD_BG);
+        btnIniciar = crearBoton("Iniciar", COLOR_ACCENT_GREEN);
+        btnPausar = crearBoton("Pausar", COLOR_ACCENT_ORANGE);
+        JButton btnReiniciar = crearBoton("Reiniciar", COLOR_CARD_BG);
+        JButton btnProcManual = crearBoton("Proceso Manual", COLOR_ACCENT_PURPLE);
+        JButton btnProcRandom = crearBoton("Proceso Random", COLOR_ACCENT_PURPLE);
+        JButton btnExportar = crearBoton("Exportar JSON", COLOR_ACCENT_BLUE);
 
         btnIniciar.addActionListener(e -> {
             RelojGlobal.iniciar();
-            lblEstadoSimulacion.setText("Estado: Simulación ejecutándose con Thread real...");
+            lblEstadoSimulacion.setText("Estado: Simulación en ejecución...");
             lblEstadoSimulacion.setForeground(COLOR_ACCENT_GREEN);
-            registrarLog(">>> Hilo de RelojGlobal INICIADO.");
+            registrarLog(">>> RelojGlobal INICIADO.");
         });
 
         btnPausar.addActionListener(e -> {
             RelojGlobal.pausar();
             lblEstadoSimulacion.setText("Estado: Simulación Pausada.");
             lblEstadoSimulacion.setForeground(COLOR_ACCENT_ORANGE);
-            registrarLog(">>> Simulación PAUSADA.");
+            registrarLog(">>> RelojGlobal PAUSADO en ciclo " + RelojGlobal.getCicloActual() + ".");
         });
 
         btnReiniciar.addActionListener(e -> {
-            RelojGlobal.reiniciar();
-            inicializarSimulacion(configuracionActual);
-            registrarLog(">>> Simulación REINICIADA a Ciclo 0.");
+            if (configuracionActual != null) {
+                inicializarSimulacion(configuracionActual);
+                registrarLog(">>> Simulación REINICIADA a Ciclo 0.");
+            }
         });
 
-        pnlControles.add(btnIniciar);
-        pnlControles.add(btnPausar);
-        pnlControles.add(btnReiniciar);
-        header.add(pnlControles, BorderLayout.CENTER);
+        btnProcManual.addActionListener(e -> crearProcesoManual());
+        btnProcRandom.addActionListener(e -> crearProcesoAleatorio());
+        btnExportar.addActionListener(e -> exportarEstadoJSON());
 
-        // Parámetros Dinámicos
-        JPanel pnlParametros = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
-        pnlParametros.setOpaque(false);
+        pnlBotones.add(btnIniciar);
+        pnlBotones.add(btnPausar);
+        pnlBotones.add(btnReiniciar);
+        pnlBotones.add(btnProcManual);
+        pnlBotones.add(btnProcRandom);
+        pnlBotones.add(btnExportar);
 
-        JLabel lblDuracion = new JLabel("Ciclo (ms):");
-        lblDuracion.setForeground(COLOR_TEXT_MUTED);
-        spinnerDuracionCiclo = new JSpinner(new SpinnerNumberModel(1000, 50, 5000, 100));
+        // Selectores en caliente (ModoUsuario, Usuario activo, Política CPU, Política Disco, Velocidad reloj)
+        JPanel pnlControles = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
+        pnlControles.setOpaque(false);
+
+        cbModoUsuario = new JComboBox<>(ModoUsuario.values());
+        estilarCombo(cbModoUsuario);
+
+        cbUsuarioActivo = new JComboBox<>(new String[]{"admin", "user1", "user2"});
+        estilarCombo(cbUsuarioActivo);
+
+        Runnable actualizarContextoUsuario = () -> {
+            ModoUsuario modo = (ModoUsuario) cbModoUsuario.getSelectedItem();
+            String user = (String) cbUsuarioActivo.getSelectedItem();
+            if (modo == ModoUsuario.ADMINISTRADOR) {
+                cbUsuarioActivo.setSelectedItem("admin");
+                user = "admin";
+            } else if ("admin".equals(user)) {
+                cbUsuarioActivo.setSelectedItem("user1");
+                user = "user1";
+            }
+            if (panelFS != null) {
+                panelFS.setContextoUsuario(modo, user);
+            }
+            registrarLog("Contexto de seguridad cambiado -> Rol: " + modo + " | Usuario: " + user);
+        };
+        cbModoUsuario.addActionListener(e -> actualizarContextoUsuario.run());
+        cbUsuarioActivo.addActionListener(e -> {
+            if (panelFS != null) {
+                panelFS.setContextoUsuario((ModoUsuario) cbModoUsuario.getSelectedItem(), (String) cbUsuarioActivo.getSelectedItem());
+            }
+        });
+
+        cbPoliticaCPU = new JComboBox<>(PoliticaPlanificacion.values());
+        estilarCombo(cbPoliticaCPU);
+        cbPoliticaCPU.addActionListener(e -> {
+            if (computador != null) {
+                PoliticaPlanificacion pol = (PoliticaPlanificacion) cbPoliticaCPU.getSelectedItem();
+                computador.setPoliticaPlanificacion(pol, computador.getQuantum());
+                registrarLog("Política de CPU cambiada en caliente a: " + pol);
+            }
+        });
+
+        cbPoliticaDisco = new JComboBox<>(PoliticaDisco.values());
+        estilarCombo(cbPoliticaDisco);
+        cbPoliticaDisco.addActionListener(e -> {
+            if (disco != null) {
+                PoliticaDisco pol = (PoliticaDisco) cbPoliticaDisco.getSelectedItem();
+                disco.setPolitica(instanciarPoliticaDisco(pol));
+                registrarLog("Política de Disco cambiada en caliente a: " + pol);
+            }
+        });
+
+        spinnerDuracionCiclo = new JSpinner(new SpinnerNumberModel(300, 50, 5000, 50));
+        spinnerDuracionCiclo.setPreferredSize(new Dimension(65, 25));
         spinnerDuracionCiclo.addChangeListener(e -> {
-            int nuevaDuracion = (int) spinnerDuracionCiclo.getValue();
-            RelojGlobal.setDuracionCicloMs(nuevaDuracion);
-            registrarLog("Parámetro actualizado: Duración de ciclo = " + nuevaDuracion + " ms.");
+            int ms = (int) spinnerDuracionCiclo.getValue();
+            RelojGlobal.setDuracionCicloMs(ms);
+            registrarLog("Velocidad del reloj ajustada a " + ms + " ms/ciclo.");
         });
 
-        JLabel lblLatencia = new JLabel("Latencia Red:");
-        lblLatencia.setForeground(COLOR_TEXT_MUTED);
-        spinnerLatenciaRed = new JSpinner(new SpinnerNumberModel(2, 0, 20, 1));
+        pnlControles.add(crearLabelMuted("Rol:"));
+        pnlControles.add(cbModoUsuario);
+        pnlControles.add(crearLabelMuted("User:"));
+        pnlControles.add(cbUsuarioActivo);
+        pnlControles.add(crearLabelMuted("CPU:"));
+        pnlControles.add(cbPoliticaCPU);
+        pnlControles.add(crearLabelMuted("Disco:"));
+        pnlControles.add(cbPoliticaDisco);
+        pnlControles.add(crearLabelMuted("ms:"));
+        pnlControles.add(spinnerDuracionCiclo);
 
-        pnlParametros.add(lblDuracion);
-        pnlParametros.add(spinnerDuracionCiclo);
-        pnlParametros.add(lblLatencia);
-        pnlParametros.add(spinnerLatenciaRed);
+        header.add(pnlBotones, BorderLayout.WEST);
+        header.add(pnlControles, BorderLayout.EAST);
 
-        header.add(pnlParametros, BorderLayout.EAST);
-        return header;
+        // Fila 2: Barra rápida de telemetría del Hardware
+        JPanel barraTelemetria = new JPanel(new GridLayout(1, 5, 10, 0));
+        barraTelemetria.setBackground(COLOR_CARD_BG);
+        barraTelemetria.setBorder(BorderFactory.createEmptyBorder(6, 12, 6, 12));
+
+        lblRelojCiclos = crearLabelTelemetria("Ciclo Global: 0", COLOR_ACCENT_BLUE);
+        lblCpuInfo = crearLabelTelemetria("CPU: IDLE (Modo USUARIO)", COLOR_ACCENT_GREEN);
+        lblRamInfo = crearLabelTelemetria("RAM: 0 / 0 MB", COLOR_TEXT_MAIN);
+        lblSwapInfo = crearLabelTelemetria("Swap: 0 / 0 bloques", COLOR_ACCENT_ORANGE);
+        lblCabezalInfo = crearLabelTelemetria("Cabezal: Bloque 0 (↑)", COLOR_TEXT_MAIN);
+
+        barraTelemetria.add(lblRelojCiclos);
+        barraTelemetria.add(lblCpuInfo);
+        barraTelemetria.add(lblRamInfo);
+        barraTelemetria.add(lblSwapInfo);
+        barraTelemetria.add(lblCabezalInfo);
+
+        contenedor.add(header, BorderLayout.NORTH);
+        contenedor.add(barraTelemetria, BorderLayout.SOUTH);
+        return contenedor;
     }
 
-    private JPanel crearPanelLateralDerecho() {
-    JPanel pnlRight = new JPanel(new GridLayout(4, 1, 0, 6)); 
-    pnlRight.setBackground(COLOR_BG);
+    private JPanel crearPanelColas() {
+        JPanel pnl = new JPanel(new GridLayout(2, 3, 8, 8));
+        pnl.setBackground(COLOR_BG);
+        pnl.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
-    // 1. Panel de Buffers Compartidos
-    JPanel pnlBuffers = new JPanel(new BorderLayout());
-    pnlBuffers.setBackground(COLOR_PANEL_BG);
-    pnlBuffers.setBorder(BorderFactory.createTitledBorder(
-        BorderFactory.createLineBorder(COLOR_CARD_BG),
-        "Buffers Compartidos & Semáforos", 0, 0, new Font("Segoe UI", Font.BOLD, 12), COLOR_ACCENT_BLUE));
+        modelNuevos = new DefaultTableModel(new Object[]{"ID", "Nombre", "Op. E/S", "Archivo", "Mem"}, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
+        modelListos = new DefaultTableModel(new Object[]{"ID", "Nombre", "Op. E/S", "Prio", "Deadline"}, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
+        modelBloqueados = new DefaultTableModel(new Object[]{"ID", "Nombre", "Motivo Bloqueo", "Archivo"}, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
+        modelListosSusp = new DefaultTableModel(new Object[]{"ID", "Nombre", "Op. E/S", "Mem", "Ubicación"}, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
+        modelBloqSusp = new DefaultTableModel(new Object[]{"ID", "Nombre", "Motivo", "Mem", "Ubicación"}, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
+        modelTerminados = new DefaultTableModel(new Object[]{"ID", "Nombre", "T. Modo SO", "Estado Final"}, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
 
-    modelBuffers = new DefaultTableModel(
-        new Object[]{"ID Buffer", "Capacidad", "Elementos", "Anfitrión", "Mutex", "Llenos", "Vacíos"}, 0
-    );
-    tblBuffersEstado = new JTable(modelBuffers);
-    estilarTabla(tblBuffersEstado);
-    pnlBuffers.add(new JScrollPane(tblBuffersEstado), BorderLayout.CENTER);
+        pnl.add(crearTarjetaCola("1. Cola de Nuevos (NEW)", modelNuevos, () -> computador != null ? computador.getColaNuevos() : null));
+        pnl.add(crearTarjetaCola("2. Cola de Listos en RAM (READY)", modelListos, () -> computador != null ? computador.getColaListos() : null));
+        pnl.add(crearTarjetaCola("3. Cola de Bloqueados E/S (BLOCKED)", modelBloqueados, () -> computador != null ? computador.getColaBloqueados() : null));
+        pnl.add(crearTarjetaCola("4. Listos-Suspendidos en Swap (READY_SUSP)", modelListosSusp, () -> computador != null ? computador.getColaListosSuspendidos() : null));
+        pnl.add(crearTarjetaCola("5. Bloqueados-Suspendidos en Swap (BLOCKED_SUSP)", modelBloqSusp, () -> computador != null ? computador.getColaBloqueadosSuspendidos() : null));
+        pnl.add(crearTarjetaCola("6. Cola de Terminados (EXIT)", modelTerminados, () -> computador != null ? computador.getColaTerminados() : null));
 
-    JButton btnNuevoBuffer = crearBotonEstilizado("+ Crear Nuevo Buffer en Caliente", COLOR_CARD_BG);
-    btnNuevoBuffer.addActionListener(this::accionCrearNuevoBuffer);
-    pnlBuffers.add(btnNuevoBuffer, BorderLayout.SOUTH);
-
-    // 2. Gráfica Comparativa de CPU (JFreeChart)
-    JPanel pnlGraficaCPU = crearPanelGraficaCPU();
-
-    // 3. Panel de Métricas Textuales
-    JPanel pnlMetricas = new JPanel(new GridLayout(3, 2, 5, 2));
-    pnlMetricas.setBackground(COLOR_PANEL_BG);
-    pnlMetricas.setBorder(BorderFactory.createTitledBorder(
-        BorderFactory.createLineBorder(COLOR_CARD_BG),
-        "Métricas de Rendimiento del Clúster", 0, 0, new Font("Segoe UI", Font.BOLD, 12), COLOR_ACCENT_BLUE));
-
-    lblThroughput = new JLabel("Throughput: 0.0 proc/ciclo");
-    lblUtilizacionCPU = new JLabel("Uso CPU: 0.0%");
-    lblTiempoRespuesta = new JLabel("T. Respuesta Prom.: 0.0");
-    lblCumplimientoDeadlines = new JLabel("Tasa Deadlines: 100.0%");
-    lblIndiceEquidad = new JLabel("Equidad (Jain): 1.00");
-    lblProdCons = new JLabel("Prod / Cons: 0 / 0");
-
-    JLabel[] lbls = {lblThroughput, lblUtilizacionCPU, lblTiempoRespuesta, lblCumplimientoDeadlines, lblIndiceEquidad, lblProdCons};
-    for (JLabel l : lbls) {
-        l.setForeground(COLOR_TEXT_MAIN);
-        l.setFont(new Font("Segoe UI", Font.PLAIN, 11));
-        pnlMetricas.add(l);
+        return pnl;
     }
 
-    // 4. Log de Eventos del Kernel
-    JPanel pnlLog = new JPanel(new BorderLayout());
-    pnlLog.setBackground(COLOR_PANEL_BG);
-    pnlLog.setBorder(BorderFactory.createTitledBorder(
-        BorderFactory.createLineBorder(COLOR_CARD_BG),
-        "Registro Global de Eventos del Kernel (Log)", 0, 0, new Font("Segoe UI", Font.BOLD, 12), COLOR_ACCENT_BLUE));
+    private interface ProveedorCola {
+        Cola<Pcb> obtener();
+    }
 
-    txtLogEventos = new JTextArea();
-    txtLogEventos.setEditable(false);
-    txtLogEventos.setBackground(new Color(15, 20, 30));
-    txtLogEventos.setForeground(new Color(180, 220, 180));
-    txtLogEventos.setFont(new Font("Consolas", Font.PLAIN, 11));
-    pnlLog.add(new JScrollPane(txtLogEventos), BorderLayout.CENTER);
+    private JScrollPane crearTarjetaCola(String titulo, DefaultTableModel model, ProveedorCola proveedor) {
+        JTable tabla = new JTable(model);
+        estilarTabla(tabla);
+        tabla.setToolTipText("Doble clic sobre una fila para inspeccionar el PCB completo");
 
-   
-    pnlRight.add(pnlBuffers);    
-    pnlRight.add(pnlGraficaCPU); 
-    pnlRight.add(pnlMetricas);    
-    pnlRight.add(pnlLog);        
+        tabla.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() == 2 && tabla.getSelectedRow() != -1) {
+                    String pid = String.valueOf(model.getValueAt(tabla.getSelectedRow(), 0));
+                    Pcb seleccionado = buscarPcbEnCola(proveedor.obtener(), pid);
+                    if (seleccionado != null) {
+                        DialogoNuevoProceso.mostrarDetallePCB(VistaMonitoreo.this, seleccionado);
+                    }
+                }
+            }
+        });
 
-    return pnlRight;
-}
-    
-    /**
-     * Construye la gráfica en pantalla
-     * @return 
-     */
-    private JPanel crearPanelGraficaCPU() {
-        datasetCPU = new XYSeriesCollection();
+        JScrollPane sp = new JScrollPane(tabla);
+        sp.getViewport().setBackground(new Color(22, 30, 44));
+        sp.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(COLOR_CARD_BG), titulo,
+            0, 0, new Font("Segoe UI", Font.BOLD, 11), COLOR_ACCENT_BLUE));
+        return sp;
+    }
 
-        chartCPU = ChartFactory.createXYLineChart(
-            null,                       // Título
-            "Ciclo de Reloj",           // Eje X
-            "Uso CPU (%)",              // Eje Y
-            datasetCPU,
+    private JPanel crearPanelMetricasYGraficas() {
+        JPanel contenedor = new JPanel(new BorderLayout(10, 10));
+        contenedor.setBackground(COLOR_BG);
+        contenedor.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        // Panel superior con tarjetas numéricas de rendimiento
+        JPanel pnlCards = new JPanel(new GridLayout(2, 4, 10, 8));
+        pnlCards.setBackground(COLOR_PANEL_BG);
+        pnlCards.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(COLOR_CARD_BG), "Indicadores de Rendimiento en Vivo (Disco, Swap y CPU)",
+            0, 0, new Font("Segoe UI", Font.BOLD, 12), COLOR_ACCENT_BLUE));
+
+        lblDesplazamientoTotal = crearLabelMetrica("Desplazamiento Cabezal: 0 pistas");
+        lblSolicitudesAtendidas = crearLabelMetrica("Solicitudes E/S Atendidas: 0");
+        lblEsperaPromedioES = crearLabelMetrica("Espera Prom. Cola E/S: 0.00 ciclos");
+        lblRespuestaPromedioES = crearLabelMetrica("Respuesta Prom. E/S: 0.00 ciclos");
+        lblUtilizacionCPU = crearLabelMetrica("Utilización CPU: 0.0%");
+        lblThroughput = crearLabelMetrica("Throughput: 0.00 proc/ciclo");
+        lblDeadlines = crearLabelMetrica("Cumplimiento Deadlines: 100.0%");
+        lblIntegridadFS = crearLabelMetrica("Integridad Árbol-Disco: VERIFICADA");
+
+        pnlCards.add(lblDesplazamientoTotal);
+        pnlCards.add(lblSolicitudesAtendidas);
+        pnlCards.add(lblEsperaPromedioES);
+        pnlCards.add(lblRespuestaPromedioES);
+        pnlCards.add(lblUtilizacionCPU);
+        pnlCards.add(lblThroughput);
+        pnlCards.add(lblDeadlines);
+        pnlCards.add(lblIntegridadFS);
+
+        contenedor.add(pnlCards, BorderLayout.NORTH);
+
+        // Panel central con 2 Gráficas JFreeChart
+        JPanel pnlGraficas = new JPanel(new GridLayout(1, 2, 12, 0));
+        pnlGraficas.setOpaque(false);
+
+        serieCabezal = new XYSeries("Bloque / Pista del Cabezal");
+        XYSeriesCollection datasetXY = new XYSeriesCollection(serieCabezal);
+        JFreeChart chartCabezal = ChartFactory.createXYLineChart(
+            "Trayectoria del Cabezal en el Tiempo",
+            "Ciclo de Reloj",
+            "Bloque / Pista",
+            datasetXY,
             PlotOrientation.VERTICAL,
-            true,                       // Leyenda
-            true,                       // Tooltips
-            false
+            true, true, false
         );
+        estilarXYChart(chartCabezal);
 
-        // 1. Configurar Fondo del Chart
-        chartCPU.setBackgroundPaint(COLOR_PANEL_BG);
+        datasetPoliticas = new DefaultCategoryDataset();
+        JFreeChart chartPoliticas = ChartFactory.createBarChart(
+            "Rendimiento Comparativo por Política de Disco",
+            "Política de Planificación",
+            "Cantidad",
+            datasetPoliticas,
+            PlotOrientation.VERTICAL,
+            true, true, false
+        );
+        estilarBarChart(chartPoliticas);
 
-        // 2. Estilar la Leyenda (Texto Blanco y Fondo Oscuro Transparente)
-        if (chartCPU.getLegend() != null) {
-            chartCPU.getLegend().setItemPaint(Color.WHITE);
-            chartCPU.getLegend().setBackgroundPaint(new Color(15, 20, 30));
-        }
+        pnlGraficas.add(new ChartPanel(chartCabezal));
+        pnlGraficas.add(new ChartPanel(chartPoliticas));
 
-        // 3. Estilar el Plot (Área de Dibujo)
-        XYPlot plot = chartCPU.getXYPlot();
-        plot.setBackgroundPaint(new Color(15, 20, 30));
-        plot.setDomainGridlinePaint(COLOR_CARD_BG);
-        plot.setRangeGridlinePaint(COLOR_CARD_BG);
-
-        // 4. Configurar Eje X (Ciclos)
-        plot.getDomainAxis().setLabelPaint(Color.WHITE);
-        plot.getDomainAxis().setTickLabelPaint(Color.WHITE);
-        plot.getDomainAxis().setAutoRange(true); // Se expande automáticamente con los ciclos
-
-        // 5. Configurar Eje Y (Porcentaje de CPU: Fijar estricto de 0 a 100%)
-        org.jfree.chart.axis.NumberAxis rangeAxis = (org.jfree.chart.axis.NumberAxis) plot.getRangeAxis();
-        rangeAxis.setRange(0.0, 105.0); // Rango fijo de 0 a 100%
-        rangeAxis.setLabelPaint(Color.WHITE);
-        rangeAxis.setTickLabelPaint(Color.WHITE);
-
-        // 6. Hacer las líneas del gráfico más gruesas para que sean visibles
-        XYLineAndShapeRenderer renderer = new XYLineAndShapeRenderer(true, false);
-        renderer.setSeriesStroke(0, new BasicStroke(2.0f)); // Grosor de línea
-        plot.setRenderer(renderer);
-
-        // 7. Envolver en el ChartPanel
-        ChartPanel chartPanel = new ChartPanel(chartCPU);
-        chartPanel.setBackground(COLOR_PANEL_BG);
-        chartPanel.setPreferredSize(new Dimension(300, 180)); // Tamaño recomendado
-        chartPanel.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(COLOR_CARD_BG),
-            "CPU vs. Tiempo", 0, 0, new Font("Segoe UI", Font.BOLD, 12), COLOR_ACCENT_BLUE));
-
-        return chartPanel;
+        contenedor.add(pnlGraficas, BorderLayout.CENTER);
+        return contenedor;
     }
-    
+
+    private JPanel crearPanelInferiorLog() {
+        JPanel pnlInferior = new JPanel(new BorderLayout(0, 2));
+        pnlInferior.setBackground(COLOR_BG);
+
+        txtLogEventos = new JTextArea(5, 80);
+        txtLogEventos.setEditable(false);
+        txtLogEventos.setBackground(new Color(14, 18, 28));
+        txtLogEventos.setForeground(new Color(170, 230, 170));
+        txtLogEventos.setFont(new Font("Consolas", Font.PLAIN, 11));
+
+        JScrollPane spLog = new JScrollPane(txtLogEventos);
+        spLog.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(COLOR_CARD_BG), "Bitácora de Eventos del Kernel (Cabezal, CRUD y Swap)",
+            0, 0, new Font("Segoe UI", Font.BOLD, 11), COLOR_ACCENT_BLUE));
+
+        JPanel footer = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        footer.setBackground(COLOR_PANEL_BG);
+        lblEstadoSimulacion = new JLabel("Estado: Listo para iniciar simulación.");
+        lblEstadoSimulacion.setForeground(COLOR_TEXT_MUTED);
+        lblEstadoSimulacion.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+        footer.add(lblEstadoSimulacion);
+
+        pnlInferior.add(spLog, BorderLayout.CENTER);
+        pnlInferior.add(footer, BorderLayout.SOUTH);
+        return pnlInferior;
+    }
+
+    // =========================================================================
+    // INICIALIZACIÓN Y SINCRONIZACIÓN CON EL NÚCLEO (DÍA 4)
+    // =========================================================================
+
     public void inicializarSimulacion(ConfiguracionSimulacion config) {
         this.configuracionActual = config;
         RelojGlobal.reiniciar();
-        RelojGlobal.registrarObservador(this);
 
         if (config == null) return;
 
-        int duracionCiclo = 500;
-        int swapBlocks = 32;
+        int duracionCiclo = 300;
         String politicaDiscoStr = "FIFO";
-        int velocidadCabezal = Math.max(1, config.velocidadCabezal);
 
         if (config.datosProcesos != null && config.datosProcesos.globalConfig != null) {
             ConfiguracionSimulacion.GlobalConfigJSON gc = config.datosProcesos.globalConfig;
             if (gc.cycleDurationMs > 0) duracionCiclo = gc.cycleDurationMs;
-            if (gc.swapSizeBlocks >= 0) swapBlocks = gc.swapSizeBlocks;
             if (gc.initialDiskPolicy != null) politicaDiscoStr = gc.initialDiskPolicy;
-            if (gc.headSpeed != null && gc.headSpeed > 0) velocidadCabezal = gc.headSpeed;
+            if (gc.headSpeed != null && gc.headSpeed > 0) {
+                config.velocidadCabezal = gc.headSpeed;
+            }
         }
 
         spinnerDuracionCiclo.setValue(duracionCiclo);
-        spinnerLatenciaRed.setValue(1);
         RelojGlobal.setDuracionCicloMs(duracionCiclo);
 
-        // Instanciar Gestor de Métricas Global y Buffers
         gestorMetricasGlobal = new GestorMetricas();
-        listaBuffersGlobales = new ListaEnlazada<>();
+        ListaEnlazada<BufferAcotado> buffersVacios = new ListaEnlazada<>();
 
-        // 1. Configurar Disco y Sistema de Archivos desde datosFS
-        int totalBloques = 256;
-        int cabezalInicial = 0;
-        if (config.datosFS != null && config.datosFS.diskConfig != null) {
-            if (config.datosFS.diskConfig.totalBlocks > 0) {
-                totalBloques = config.datosFS.diskConfig.totalBlocks;
-            }
-            cabezalInicial = Math.max(0, config.datosFS.diskConfig.initialHead);
-        }
+// 1. Construir Disco y SistemaArchivos directamente desde los DTOs cargados
+int totalBloques = (config.datosFS != null && config.datosFS.diskConfig != null && config.datosFS.diskConfig.totalBlocks > 0)
+                ? config.datosFS.diskConfig.totalBlocks : 200;
+        int swapBlocks = (config.datosProcesos != null && config.datosProcesos.globalConfig != null)
+                ? Math.max(0, config.datosProcesos.globalConfig.swapSizeBlocks) : 0;
 
-        interfaces.IPoliticaDisco politicaDisco;
-        switch (politicaDiscoStr.toUpperCase()) {
-            case "SSTF":
-                politicaDisco = new kernel.PoliticaDiscoSSTF();
-                break;
-            case "SCAN":
-                politicaDisco = new kernel.PoliticaDiscoSCAN();
-                break;
-            case "CSCAN":
-            case "C-SCAN":
-                politicaDisco = new kernel.PoliticaDiscoCSCAN();
-                break;
-            case "FIFO":
-            default:
-                politicaDisco = new kernel.PoliticaDiscoFIFO();
-                break;
-        }
-
-        kernel.Disco disco = new kernel.Disco(totalBloques, swapBlocks, velocidadCabezal, cabezalInicial, politicaDisco);
-        RelojGlobal.registrarObservador(disco);
-        kernel.SistemaArchivos sistemaArchivos = new kernel.SistemaArchivos(disco);
-
+        // Ajustar capacidad si los archivos del JSON + Swap exceden totalBloques
+        int maxBloqueArchivo = 0;
         if (config.datosFS != null && config.datosFS.fileSystem != null) {
             for (ConfiguracionSimulacion.NodoFSJSON nodo : config.datosFS.fileSystem) {
-                if (nodo == null || nodo.path == null) continue;
-                String owner = (nodo.owner != null) ? nodo.owner : "admin";
-                String perms = (nodo.permissions != null) ? nodo.permissions : "public";
-                if ("DIRECTORY".equalsIgnoreCase(nodo.type)) {
-                    sistemaArchivos.cargarDirectorioJSON(nodo.path, owner, perms);
-                } else if ("FILE".equalsIgnoreCase(nodo.type)) {
+                if (nodo != null && "FILE".equalsIgnoreCase(nodo.type) && nodo.startBlock != null && nodo.blocks != null) {
+                    int fin = nodo.startBlock + nodo.blocks;
+                    if (fin > maxBloqueArchivo) {
+                        maxBloqueArchivo = fin;
+                    }
+                }
+            }
+        }
+        if (maxBloqueArchivo + swapBlocks > totalBloques) {
+            totalBloques = maxBloqueArchivo + swapBlocks; // [0..199] Archivos, [200..299] Swap
+        }
+
+        int cabezalInicial = (config.datosFS != null && config.datosFS.diskConfig != null)
+                ? Math.max(0, Math.min(config.datosFS.diskConfig.initialHead, totalBloques - 1)) : 50;
+        int velocidad = Math.max(1, config.velocidadCabezal);
+
+        PoliticaDisco polDiscoEnum = parsearPoliticaDisco(politicaDiscoStr);
+        disco = new Disco(totalBloques, swapBlocks, velocidad, cabezalInicial, instanciarPoliticaDisco(polDiscoEnum));
+        sistemaArchivos = new SistemaArchivos(disco);
+
+        // Cargar directorios y archivos iniciales en el Sistema de Archivos
+        if (config.datosFS != null && config.datosFS.fileSystem != null) {
+            for (ConfiguracionSimulacion.NodoFSJSON nodo : config.datosFS.fileSystem) {
+                if (nodo != null && "DIRECTORY".equalsIgnoreCase(nodo.type)) {
+                    sistemaArchivos.cargarDirectorioJSON(nodo.path, nodo.owner, nodo.permissions);
+                }
+            }
+            for (ConfiguracionSimulacion.NodoFSJSON nodo : config.datosFS.fileSystem) {
+                if (nodo != null && "FILE".equalsIgnoreCase(nodo.type)) {
                     int start = (nodo.startBlock != null) ? nodo.startBlock : -1;
                     int blocks = (nodo.blocks != null) ? nodo.blocks : 1;
-                    sistemaArchivos.cargarArchivoJSON(nodo.path, start, blocks, owner, perms, "SYS_INIT");
+                    sistemaArchivos.cargarArchivoJSON(nodo.path, start, blocks, nodo.owner, nodo.permissions, "SYS_INIT");
                 }
             }
         }
 
-        // 2. Crear Computador desde datosProcesos.computer
-        int ram = 2048;
+        // 2. Instanciar único Computador ("1") y vincular Disco y SistemaArchivos
+        int ram = 1024;
         String politicaCpuStr = "FCFS";
         int quantum = 2;
         if (config.datosProcesos != null && config.datosProcesos.computer != null) {
@@ -415,134 +549,327 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
             if (cc.quantum > 0) quantum = cc.quantum;
         }
 
-        listaComputadores = new Computador[1];
-        panelesComputadores = new PanelComputadorUI[1];
-        seriesComputadoresCPU = new XYSeries[1];
-        datasetCPU.removeAllSeries();
-        tabbedComputadores.removeAll();
+        computador = new Computador("1", ram, gestorMetricasGlobal, buffersVacios);
+        computador.setDisco(disco);
+        computador.setSistemaArchivos(sistemaArchivos);
 
-        Computador comp = new Computador("1", ram, gestorMetricasGlobal, listaBuffersGlobales);
-        comp.setDisco(disco);
-        comp.setSistemaArchivos(sistemaArchivos);
+        // Registrar Disco y luego VistaMonitoreo (Computador ya se registró en su constructor)
+        RelojGlobal.registrarObservador(disco);
+        RelojGlobal.registrarObservador(this);
+
         try {
-            comp.setPoliticaPlanificacion(PoliticaPlanificacion.valueOf(politicaCpuStr.toUpperCase()), quantum);
+            PoliticaPlanificacion polCPU = PoliticaPlanificacion.valueOf(politicaCpuStr.trim().toUpperCase());
+            cbPoliticaCPU.setSelectedItem(polCPU);
+            computador.setPoliticaPlanificacion(polCPU, quantum);
         } catch (IllegalArgumentException ex) {
-            comp.setPoliticaPlanificacion(PoliticaPlanificacion.FCFS, quantum);
+            cbPoliticaCPU.setSelectedItem(PoliticaPlanificacion.FCFS);
+            computador.setPoliticaPlanificacion(PoliticaPlanificacion.FCFS, quantum);
         }
-        listaComputadores[0] = comp;
+        cbPoliticaDisco.setSelectedItem(parsearPoliticaDisco(politicaDiscoStr));
 
-        seriesComputadoresCPU[0] = new XYSeries("Comp 1");
-        seriesComputadoresCPU[0].add(0, 0.0);
-        datasetCPU.addSeries(seriesComputadoresCPU[0]);
-
-        PanelComputadorUI panelUI = new PanelComputadorUI(comp);
-        panelesComputadores[0] = panelUI;
-        tabbedComputadores.addTab("Computador 1", panelUI);
-
-        // 3. Cargar Procesos desde datosProcesos.processes
+        // 3. Cargar Procesos iniciales
         if (config.datosProcesos != null && config.datosProcesos.processes != null) {
             for (ConfiguracionSimulacion.ProcessJSON cp : config.datosProcesos.processes) {
                 if (cp == null) continue;
                 int prio = (cp.priority != null) ? cp.priority : 1;
                 int mem = Math.max(1, cp.memory);
-                long dead = (cp.deadline > 0) ? cp.deadline : 100L;
+                long dead = (cp.deadline > 0) ? cp.deadline : 500L;
                 int inst = Math.max(1, cp.instructions);
 
-                enums.ProcesoTipo tipoProc = (cp.operation != null && !cp.operation.isEmpty())
-                        ? enums.ProcesoTipo.IO_BOUND
-                        : enums.ProcesoTipo.CPU_BOUND;
+                ProcesoTipo tipoProc = (cp.operation != null && !cp.operation.isEmpty())
+                        ? ProcesoTipo.IO_BOUND
+                        : ProcesoTipo.CPU_BOUND;
 
                 Pcb pcb = new Pcb(cp.name, "1", tipoProc, prio, mem, dead, inst);
 
+                boolean operacionValida = true;
                 if (cp.operation != null && cp.targetPath != null) {
-                    enums.TipoOperacionIO opIO = mapearOperacionIO(cp.operation);
+                    TipoOperacionIO opIO = mapearOperacionIO(cp.operation);
                     if (opIO != null) {
-                        sistemaArchivos.prepararOperacionCRUD(
+                        String err = sistemaArchivos.prepararOperacionCRUD(
                             pcb, opIO, cp.targetPath, 1, cp.name,
-                            enums.ModoUsuario.ADMINISTRADOR, "admin"
+                            ModoUsuario.ADMINISTRADOR, "admin"
                         );
+                        if (err != null) {
+                            registrarLog("[ERROR Carga JSON] Proceso " + cp.name + " omitido: " + err);
+                            operacionValida = false;
+                        }
                     }
                 }
-                comp.admitirProceso(pcb);
+                if (operacionValida) {
+                    computador.admitirProceso(pcb);
+                }
             }
         }
 
-        actualizarVistasGUI();
-        registrarLog("ÁvilaOS preparado con Disco (" + totalBloques + " bloques, Swap: " + swapBlocks + ").");
-    }
+        // 4. Vincular Paneles Visuales con sus firmas exactas
+        panelFS.vincularSistema(sistemaArchivos, computador, new PanelSistemaArchivos.ListenerEventosCRUD() {
+            @Override
+            public void onProcesoCRUDEncolado(Pcb pcb, String descripcion) {
+                registrarLog(descripcion);
+                actualizarVistasGUI();
+            }
 
-    private enums.TipoOperacionIO mapearOperacionIO(String op) {
-        if (op == null) return null;
-        switch (op.trim().toUpperCase()) {
-            case "CREATE":
-            case "CREAR":
-                return enums.TipoOperacionIO.CREAR;
-            case "READ":
-            case "LEER":
-                return enums.TipoOperacionIO.LEER;
-            case "UPDATE":
-            case "ACTUALIZAR":
-                return enums.TipoOperacionIO.ACTUALIZAR;
-            case "DELETE":
-            case "ELIMINAR":
-                return enums.TipoOperacionIO.ELIMINAR;
-            default:
-                return null;
-        }
+            @Override
+            public void onOperacionRechazada(String motivo) {
+                registrarLog("[CRUD RECHAZADO] " + motivo);
+            }
+        });
+        panelFS.setContextoUsuario((ModoUsuario) cbModoUsuario.getSelectedItem(), (String) cbUsuarioActivo.getSelectedItem());
+        panelDisco.setDisco(disco);
+
+        serieCabezal.clear();
+        serieCabezal.add(0, disco.getCabezalActual());
+        datasetPoliticas.clear();
+
+        ultimoCabezalRegistrado = disco.getCabezalActual();
+        ultimasCompletadasDisco = 0;
+        ultimosSuspendidosCount = contarTotalSuspendidos();
+
+        actualizarVistasGUI();
+        registrarLog("ÁvilaOS inicializado -> Disco: " + disco.getTotalBloques() +
+                     " bloques (Swap: " + disco.getSwapSizeBlocks() + "), RAM: " + ram + " MB.");
     }
 
     @Override
     public void tick(int cicloActual) {
         SwingUtilities.invokeLater(() -> {
-            lblRelojCiclos.setText("Reloj Global del Sistema: Ciclo " + cicloActual);
+            registrarEventosDelCiclo(cicloActual);
             actualizarVistasGUI();
         });
     }
 
+    private void registrarEventosDelCiclo(int cicloActual) {
+        if (disco == null || computador == null) return;
+
+        int cabezalNow = disco.getCabezalActual();
+        if (cabezalNow != ultimoCabezalRegistrado) {
+            String dir = disco.isHaciaArriba() ? "SUBIENDO ↑" : "BAJANDO ↓";
+            registrarLog("[Ciclo " + cicloActual + "] Cabezal desplazado: Bloque " + ultimoCabezalRegistrado + " -> " + cabezalNow + " (" + dir + ")");
+            ultimoCabezalRegistrado = cabezalNow;
+        }
+
+        int atendidasNow = disco.getTotalSolicitudesAtendidas();
+        if (atendidasNow > ultimasCompletadasDisco) {
+            registrarLog("[Ciclo " + cicloActual + "] Disco completó transferencia E/S (" + disco.getPolitica().getClass().getSimpleName() + "). Total atendidas: " + atendidasNow);
+            ultimasCompletadasDisco = atendidasNow;
+        }
+
+        int suspNow = contarTotalSuspendidos();
+        if (suspNow > ultimosSuspendidosCount) {
+            registrarLog("[Ciclo " + cicloActual + "] SWAP OUT: Proceso suspendido hacia zona Swap en disco (Suspendidos: " + suspNow + ").");
+        } else if (suspNow < ultimosSuspendidosCount) {
+            registrarLog("[Ciclo " + cicloActual + "] SWAP IN: Proceso reactivado desde Swap hacia RAM (Suspendidos: " + suspNow + ").");
+        }
+        ultimosSuspendidosCount = suspNow;
+    }
+
     private void actualizarVistasGUI() {
         int cicloActual = RelojGlobal.getCicloActual();
+        lblRelojCiclos.setText("Ciclo Global: " + cicloActual);
 
-        // 1. Refrescar Paneles de Computadores y Gráfica
-        if (panelesComputadores != null && listaComputadores != null) {
-            for (int i = 0; i < listaComputadores.length; i++) {
-                Computador comp = listaComputadores[i];
-                panelesComputadores[i].refrescar();
+        if (computador != null) {
+            Cpu cpu = computador.getCpu();
+            if (cpu != null && cpu.estaOcupada()) {
+                Pcb p = cpu.getProcesoEnEjecucion();
+                String modo = (cpu.getModo() == ModoEjecucion.SISTEMA_OPERATIVO) ? "KERNEL/SO" : "USUARIO";
+                lblCpuInfo.setText("CPU: " + p.getNombre() + " [" + modo + "]");
+                lblCpuInfo.setForeground(cpu.getModo() == ModoEjecucion.SISTEMA_OPERATIVO ? COLOR_ACCENT_ORANGE : COLOR_ACCENT_GREEN);
+            } else {
+                lblCpuInfo.setText("CPU: IDLE (Libre)");
+                lblCpuInfo.setForeground(COLOR_TEXT_MUTED);
+            }
 
-                // Actualizar la curva de CPU en la gráfica de JFreeChart
-                double usoCpuPercent = comp.getCpu().estaOcupada() ? 100.0 : 0.0;
-                if (seriesComputadoresCPU != null && i < seriesComputadoresCPU.length) {
-                    seriesComputadoresCPU[i].add(cicloActual, usoCpuPercent);
-                }
+            int ramUsada = computador.getMemoriaRAM().getMemoriaUsada();
+            int ramTotal = computador.getMemoriaRAM().getCapacidadTotal();
+            lblRamInfo.setText("RAM: " + ramUsada + " / " + ramTotal + " MB");
+
+            refrescarTablaCola(modelNuevos, computador.getColaNuevos(),
+                p -> new Object[]{p.getId(), p.getNombre(), p.getOperacionIO(), p.getRutaArchivo(), p.getMemoriaAsignada()});
+            refrescarTablaCola(modelListos, computador.getColaListos(),
+                p -> new Object[]{p.getId(), p.getNombre(), p.getOperacionIO(), p.getPrioridad(), p.getDeadline()});
+            refrescarTablaCola(modelBloqueados, computador.getColaBloqueados(),
+                p -> new Object[]{p.getId(), p.getNombre(), p.getMotivoBloqueo(), p.getRutaArchivo()});
+            refrescarTablaCola(modelListosSusp, computador.getColaListosSuspendidos(),
+                p -> new Object[]{p.getId(), p.getNombre(), p.getOperacionIO(), p.getMemoriaAsignada(), "SWAP"});
+            refrescarTablaCola(modelBloqSusp, computador.getColaBloqueadosSuspendidos(),
+                p -> new Object[]{p.getId(), p.getNombre(), p.getMotivoBloqueo(), p.getMemoriaAsignada(), "SWAP"});
+            refrescarTablaCola(modelTerminados, computador.getColaTerminados(),
+                p -> new Object[]{p.getId(), p.getNombre(), p.getTiempoModoSO(), p.getEstado()});
+        }
+
+        if (disco != null) {
+            int swapTotal = disco.getSwapSizeBlocks();
+            int swapUsados = swapTotal - disco.contarBloquesLibresSwap();
+            lblSwapInfo.setText("Swap: " + swapUsados + " / " + swapTotal + " bloques");
+
+            String flecha = disco.isHaciaArriba() ? "↑ SUBIENDO" : "↓ BAJANDO";
+            lblCabezalInfo.setText("Cabezal: Bloque " + disco.getCabezalActual() + " (" + flecha + ")");
+
+            lblDesplazamientoTotal.setText("Desplazamiento Cabezal: " + disco.getDesplazamientoTotal() + " pistas");
+            lblSolicitudesAtendidas.setText("Solicitudes E/S Atendidas: " + disco.getTotalSolicitudesAtendidas());
+            lblEsperaPromedioES.setText(String.format("Espera Prom. Cola E/S: %.2f ciclos", disco.getTiempoPromedioEsperaES()));
+            lblRespuestaPromedioES.setText(String.format("Respuesta Prom. E/S: %.2f ciclos", disco.getTiempoPromedioRespuestaES()));
+
+            serieCabezal.add(cicloActual, disco.getCabezalActual());
+
+            String[] politicas = {"FIFO", "SSTF", "SCAN", "C-SCAN"};
+            for (String pol : politicas) {
+                datasetPoliticas.setValue(disco.getDesplazamientoPorPolitica(pol), "Pistas Recorridas", pol);
+                datasetPoliticas.setValue(disco.getSolicitudesAtendidasPorPolitica(pol), "Solicitudes Atendidas", pol);
             }
         }
 
-        // 2. Refrescar Tabla de Buffers
-        modelBuffers.setRowCount(0);
-        if (listaBuffersGlobales != null) {
-            for (int i = 0; i < listaBuffersGlobales.getTamano(); i++) {
-                BufferAcotado b = listaBuffersGlobales.obtener(i);
-                if (b != null) {
-                    modelBuffers.addRow(new Object[]{
-                        b.getIdBuffer(),
-                        b.getCapacidad(),
-                        b.getCantidadElementos(),
-                        b.getComputadorPropietarioId(),
-                        b.getValorMutex(),
-                        b.getValorEspacios(),
-                        b.getValorElementos()
-                    });
-                }
-            }
-        }
-
-        // 3. Refrescar Métricas
         if (gestorMetricasGlobal != null) {
+            lblUtilizacionCPU.setText(String.format("Utilización CPU: %.1f%%", gestorMetricasGlobal.calcularUtilizacionCPU(cicloActual)));
             lblThroughput.setText(String.format("Throughput: %.2f proc/ciclo", gestorMetricasGlobal.calcularThroughput(cicloActual)));
-            lblUtilizacionCPU.setText(String.format("Uso CPU Global: %.1f%%", gestorMetricasGlobal.calcularUtilizacionCPU(cicloActual)));
-            lblTiempoRespuesta.setText(String.format("T. Respuesta Prom.: %.1f", gestorMetricasGlobal.calcularTiempoRespuestaPromedio()));
-            lblCumplimientoDeadlines.setText(String.format("Tasa Deadlines: %.1f%%", gestorMetricasGlobal.calcularTasaCumplimientoDeadlines()));
-            lblIndiceEquidad.setText(String.format("Equidad (Jain): %.2f", gestorMetricasGlobal.calcularEquidad()));
-            lblProdCons.setText(String.format("Prod / Cons: %d / %d", gestorMetricasGlobal.getTotalElementosProducidos(), gestorMetricasGlobal.getTotalElementosConsumidos()));
+            lblDeadlines.setText(String.format("Cumplimiento Deadlines: %.1f%%", gestorMetricasGlobal.calcularTasaCumplimientoDeadlines()));
+        }
+
+        if (sistemaArchivos != null) {
+            boolean ok = sistemaArchivos.verificarIntegridadReferencial();
+            lblIntegridadFS.setText("Integridad Árbol-Disco: " + (ok ? "VERIFICADA (OK)" : "DESINCRONIZADA"));
+            lblIntegridadFS.setForeground(ok ? COLOR_ACCENT_GREEN : COLOR_ACCENT_ORANGE);
+            panelFS.refrescarTodo();
+        }
+
+        if (panelDisco != null) {
+            panelDisco.refrescar();
+        }
+    }
+
+    // =========================================================================
+    // MÉTODOS AUXILIARES Y ACCIONES DE USUARIO
+    // =========================================================================
+
+    private interface ExtractorFila {
+        Object[] extraer(Pcb p);
+    }
+
+    private void refrescarTablaCola(DefaultTableModel model, Cola<Pcb> cola, ExtractorFila extractor) {
+        model.setRowCount(0);
+        if (cola == null || cola.esVacia()) return;
+
+        Cola<Pcb> aux = new Cola<>();
+        while (!cola.esVacia()) {
+            Pcb p = cola.desencolar();
+            model.addRow(extractor.extraer(p));
+            aux.encolar(p);
+        }
+        while (!aux.esVacia()) {
+            cola.encolar(aux.desencolar());
+        }
+    }
+
+    private Pcb buscarPcbEnCola(Cola<Pcb> cola, String pid) {
+        if (cola == null || cola.esVacia() || pid == null) return null;
+        Pcb encontrado = null;
+        Cola<Pcb> aux = new Cola<>();
+        while (!cola.esVacia()) {
+            Pcb p = cola.desencolar();
+            if (p.getId().equals(pid)) encontrado = p;
+            aux.encolar(p);
+        }
+        while (!aux.esVacia()) {
+            cola.encolar(aux.desencolar());
+        }
+        return encontrado;
+    }
+
+    private int contarTotalSuspendidos() {
+        if (computador == null) return 0;
+        return contarElementosCola(computador.getColaListosSuspendidos())
+             + contarElementosCola(computador.getColaBloqueadosSuspendidos());
+    }
+
+    private int contarElementosCola(Cola<Pcb> cola) {
+        if (cola == null || cola.esVacia()) return 0;
+        int count = 0;
+        Cola<Pcb> aux = new Cola<>();
+        while (!cola.esVacia()) {
+            aux.encolar(cola.desencolar());
+            count++;
+        }
+        while (!aux.esVacia()) {
+            cola.encolar(aux.desencolar());
+        }
+        return count;
+    }
+
+    private void crearProcesoManual() {
+        if (computador == null || sistemaArchivos == null) return;
+        ModoUsuario modo = (ModoUsuario) cbModoUsuario.getSelectedItem();
+        String user = (String) cbUsuarioActivo.getSelectedItem();
+
+        Pcb creado = DialogoNuevoProceso.mostrarDialogoManual(this, computador, sistemaArchivos, modo, user);
+        if (creado != null) {
+            registrarLog("Proceso manual creado: " + creado.getId() + " (" + creado.getNombre() + ") admitido.");
+            actualizarVistasGUI();
+        }
+    }
+
+    private void crearProcesoAleatorio() {
+        if (computador == null || sistemaArchivos == null) return;
+        ModoUsuario modo = (ModoUsuario) cbModoUsuario.getSelectedItem();
+        String user = (String) cbUsuarioActivo.getSelectedItem();
+
+        Pcb rnd = DialogoNuevoProceso.generarProcesoAleatorio(computador, sistemaArchivos, modo, user);
+        if (rnd != null) {
+            registrarLog("Proceso aleatorio encolado: " + rnd.getId() + " (" + rnd.getNombre() + ").");
+            actualizarVistasGUI();
+        }
+    }
+
+    private void exportarEstadoJSON() {
+        if (sistemaArchivos == null) return;
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Guardar Estado del Sistema de Archivos y Disco (.json)");
+        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File f = chooser.getSelectedFile();
+            String ruta = f.getAbsolutePath().endsWith(".json") ? f.getAbsolutePath() : f.getAbsolutePath() + ".json";
+            try {
+                new GestorJSON().guardarSistemaArchivosJSON(sistemaArchivos, ruta);
+                registrarLog("Estado del sistema de archivos exportado a: " + ruta);
+                JOptionPane.showMessageDialog(this, "Estado exportado exitosamente en:\n" + ruta, "Exportación JSON", JOptionPane.INFORMATION_MESSAGE);
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "Error al exportar JSON:\n" + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private PoliticaDisco parsearPoliticaDisco(String nombre) {
+        if (nombre == null) return PoliticaDisco.FIFO;
+        String norm = nombre.trim().toUpperCase().replace("-", "_");
+        try {
+            return PoliticaDisco.valueOf(norm);
+        } catch (IllegalArgumentException e) {
+            return PoliticaDisco.FIFO;
+        }
+    }
+
+    private IPoliticaDisco instanciarPoliticaDisco(PoliticaDisco pol) {
+        if (pol == null) return new PoliticaDiscoFIFO();
+        switch (pol) {
+            case SSTF: return new PoliticaDiscoSSTF();
+            case SCAN: return new PoliticaDiscoSCAN();
+            case C_SCAN: return new PoliticaDiscoCSCAN();
+            case FIFO:
+            default: return new PoliticaDiscoFIFO();
+        }
+    }
+
+    private TipoOperacionIO mapearOperacionIO(String op) {
+        if (op == null) return null;
+        switch (op.trim().toUpperCase()) {
+            case "CREATE":
+            case "CREAR": return TipoOperacionIO.CREAR;
+            case "READ":
+            case "LEER": return TipoOperacionIO.LEER;
+            case "UPDATE":
+            case "ACTUALIZAR": return TipoOperacionIO.ACTUALIZAR;
+            case "DELETE":
+            case "ELIMINAR": return TipoOperacionIO.ELIMINAR;
+            default: return null;
         }
     }
 
@@ -551,306 +878,104 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
         txtLogEventos.setCaretPosition(txtLogEventos.getDocument().getLength());
     }
 
-    private void accionCrearNuevoBuffer(ActionEvent e) {
-        JTextField txtId = new JTextField("B" + (listaBuffersGlobales.getTamano() + 1));
-        JTextField txtCap = new JTextField("5");
-        JTextField txtCompId = new JTextField("1");
-
-        Object[] message = {
-            "ID del Nuevo Buffer:", txtId,
-            "Capacidad:", txtCap,
-            "ID Computador Anfitrión:", txtCompId
-        };
-
-        if (JOptionPane.showConfirmDialog(this, message, "Crear Nuevo Buffer", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) {
-            try {
-                BufferAcotado nuevo = new BufferAcotado(txtId.getText().trim(), txtCompId.getText().trim(), Integer.parseInt(txtCap.getText().trim()));
-                listaBuffersGlobales.agregarAlFinal(nuevo);
-                actualizarVistasGUI();
-                registrarLog("Buffer dinamico " + txtId.getText() + " creado en Computador " + txtCompId.getText());
-            } catch (Exception ex) {
-                JOptionPane.showMessageDialog(this, "Parámetros inválidos.", "Error", JOptionPane.ERROR_MESSAGE);
-            }
+    private void estilarXYChart(JFreeChart chart) {
+        chart.setBackgroundPaint(COLOR_PANEL_BG);
+        if (chart.getTitle() != null) chart.getTitle().setPaint(COLOR_TEXT_MAIN);
+        if (chart.getLegend() != null) {
+            chart.getLegend().setItemPaint(COLOR_TEXT_MAIN);
+            chart.getLegend().setBackgroundPaint(COLOR_CARD_BG);
         }
-    }
-    
-    private void accionCrearNuevoProceso(ActionEvent e) {
-        if (listaComputadores == null || listaComputadores.length == 0) {
-            JOptionPane.showMessageDialog(this, "No hay computadores inicializados.", "Error", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
-        JTextField txtNombre = new JTextField("Nuevo_Proceso");
-        JComboBox<String> cbComp = new JComboBox<>();
-        for (Computador c : listaComputadores) cbComp.addItem(c.getId());
-        
-        JComboBox<String> cbTipo = new JComboBox<>(new String[]{"CPU_BOUND", "IO_BOUND", "PRODUCTOR", "CONSUMIDOR"});
-        JTextField txtPrio = new JTextField("1");
-        JTextField txtMem = new JTextField("128");
-        JTextField txtDeadline = new JTextField("100");
-        JTextField txtTiempo = new JTextField("20");
-        
-        JTextField txtBufferId = new JTextField("");
-        JTextField txtCiclosProd = new JTextField("1");
-        JTextField txtElemReq = new JTextField("5");
-
-        Object[] message = {
-            "Nombre:", txtNombre,
-            "Computador:", cbComp,
-            "Tipo:", cbTipo,
-            "Prioridad (menor = mayor):", txtPrio,
-            "Memoria (MB):", txtMem,
-            "Deadline (ciclos):", txtDeadline,
-            "Tiempo Ejecución (ciclos):", txtTiempo,
-            "--- Solo para Prod/Cons ---",
-            "ID Buffer Asociado:", txtBufferId,
-            "Ciclos entre Prod/Cons:", txtCiclosProd,
-            "Elementos Requeridos:", txtElemReq
-        };
-
-        if (JOptionPane.showConfirmDialog(this, message, "Crear Nuevo Proceso", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) {
-            try {
-                String nombre = txtNombre.getText().trim();
-                String compId = (String) cbComp.getSelectedItem();
-                enums.ProcesoTipo tipo = enums.ProcesoTipo.valueOf(((String) cbTipo.getSelectedItem()).toUpperCase());
-                int prio = Integer.parseInt(txtPrio.getText().trim());
-                int mem = Integer.parseInt(txtMem.getText().trim());
-                long deadline = Long.parseLong(txtDeadline.getText().trim());
-                int tiempo = Integer.parseInt(txtTiempo.getText().trim());
-
-                Pcb pcb = new Pcb(nombre, compId, tipo, prio, mem, deadline, tiempo);
-                
-                if (tipo == enums.ProcesoTipo.PRODUCTOR || tipo == enums.ProcesoTipo.CONSUMIDOR) {
-                    pcb.setBufferAsociadoId(txtBufferId.getText().trim());
-                    pcb.setCiclosProducirConsumir(Integer.parseInt(txtCiclosProd.getText().trim()));
-                    pcb.setElementosRequeridos(Integer.parseInt(txtElemReq.getText().trim()));
-                }
-
-                for (Computador c : listaComputadores) {
-                    if (c.getId().equals(compId)) {
-                        c.admitirProceso(pcb);
-                        registrarLog("Proceso " + nombre + " creado en caliente en Computador " + compId);
-                        break;
-                    }
-                }
-                actualizarVistasGUI();
-            } catch (Exception ex) {
-                JOptionPane.showMessageDialog(this, "Parámetros inválidos: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-            }
-        }
+        XYPlot plot = chart.getXYPlot();
+        plot.setBackgroundPaint(new Color(15, 20, 30));
+        plot.setDomainGridlinePaint(COLOR_CARD_BG);
+        plot.setRangeGridlinePaint(COLOR_CARD_BG);
+        plot.getDomainAxis().setLabelPaint(COLOR_TEXT_MAIN);
+        plot.getDomainAxis().setTickLabelPaint(COLOR_TEXT_MAIN);
+        plot.getRangeAxis().setLabelPaint(COLOR_TEXT_MAIN);
+        plot.getRangeAxis().setTickLabelPaint(COLOR_TEXT_MAIN);
+        XYLineAndShapeRenderer renderer = new XYLineAndShapeRenderer(true, false);
+        renderer.setSeriesPaint(0, COLOR_ACCENT_BLUE);
+        renderer.setSeriesStroke(0, new BasicStroke(2.2f));
+        plot.setRenderer(renderer);
     }
 
-    private JButton crearBotonEstilizado(String texto, Color bg) {
+    private void estilarBarChart(JFreeChart chart) {
+        chart.setBackgroundPaint(COLOR_PANEL_BG);
+        if (chart.getTitle() != null) chart.getTitle().setPaint(COLOR_TEXT_MAIN);
+        if (chart.getLegend() != null) {
+            chart.getLegend().setItemPaint(COLOR_TEXT_MAIN);
+            chart.getLegend().setBackgroundPaint(COLOR_CARD_BG);
+        }
+        CategoryPlot plot = chart.getCategoryPlot();
+        plot.setBackgroundPaint(new Color(15, 20, 30));
+        plot.setRangeGridlinePaint(COLOR_CARD_BG);
+        plot.getDomainAxis().setLabelPaint(COLOR_TEXT_MAIN);
+        plot.getDomainAxis().setTickLabelPaint(COLOR_TEXT_MAIN);
+        plot.getRangeAxis().setLabelPaint(COLOR_TEXT_MAIN);
+        plot.getRangeAxis().setTickLabelPaint(COLOR_TEXT_MAIN);
+    }
+
+    private JButton crearBoton(String texto, Color bg) {
         JButton btn = new JButton(texto);
         btn.setBackground(bg);
         btn.setForeground(Color.WHITE);
         btn.setFont(new Font("Segoe UI", Font.BOLD, 11));
         btn.setFocusPainted(false);
-        btn.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
         return btn;
+    }
+
+    private JLabel crearLabelMuted(String texto) {
+        JLabel l = new JLabel(texto);
+        l.setForeground(COLOR_TEXT_MUTED);
+        l.setFont(new Font("Segoe UI", Font.BOLD, 11));
+        return l;
+    }
+
+    private JLabel crearLabelTelemetria(String texto, Color color) {
+        JLabel l = new JLabel(texto);
+        l.setForeground(color);
+        l.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        return l;
+    }
+
+    private JLabel crearLabelMetrica(String texto) {
+        JLabel l = new JLabel(texto);
+        l.setForeground(COLOR_TEXT_MAIN);
+        l.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        l.setBorder(BorderFactory.createEmptyBorder(4, 10, 4, 10));
+        return l;
+    }
+
+    private void estilarCombo(JComboBox<?> combo) {
+        combo.setBackground(COLOR_CARD_BG);
+        combo.setForeground(COLOR_TEXT_MAIN);
+        combo.setFont(new Font("Segoe UI", Font.BOLD, 11));
     }
 
     private void estilarTabla(JTable tabla) {
         tabla.setBackground(new Color(22, 30, 44));
         tabla.setForeground(COLOR_TEXT_MAIN);
         tabla.setGridColor(COLOR_CARD_BG);
+        tabla.setRowHeight(21);
         tabla.getTableHeader().setBackground(COLOR_CARD_BG);
         tabla.getTableHeader().setForeground(COLOR_ACCENT_BLUE);
         tabla.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 11));
-        tabla.setRowHeight(20);
     }
 
-    // Panel UI de cada Computador
-    private class PanelComputadorUI extends JPanel {
-        private final Computador computador;
-
-        private JLabel lblProcesoRunning;
-        private JLabel lblModoEjecucion;
-        private JLabel lblRegistrosCPU;
-        private JProgressBar barRAM;
-
-        private DefaultTableModel modelNuevos;
-        private DefaultTableModel modelListos;
-        private DefaultTableModel modelBloqueados;
-        private DefaultTableModel modelTerminados;
-        
-        private JComboBox<PoliticaPlanificacion> cbPolitica;
-        private JSpinner spinnerQuantum;
-
-        public PanelComputadorUI(Computador comp) {
-            this.computador = comp;
-            setLayout(new BorderLayout(8, 8));
-            setBackground(COLOR_BG);
-            setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-
-            // PANEL SUPERIOR: CPU, RAM Y CONTROLES DE PLANIFICACIÓN
-            JPanel pnlTop = new JPanel(new GridLayout(1, 3, 8, 0)); // Ahora son 3 columnas
-            pnlTop.setOpaque(false);
-
-            JPanel cardCPU = crearCardPanel("Estado de CPU & Modo");
-            lblProcesoRunning = new JLabel("Proceso: NINGUNO (CPU Libre)");
-            lblProcesoRunning.setForeground(COLOR_ACCENT_GREEN);
-            lblProcesoRunning.setFont(new Font("Segoe UI", Font.BOLD, 12));
-
-            lblModoEjecucion = new JLabel("Modo: USUARIO");
-            lblModoEjecucion.setForeground(COLOR_TEXT_MUTED);
-
-            lblRegistrosCPU = new JLabel("PC: 0 | MAR: 0 | Prioridad: - | Deadline: -");
-            lblRegistrosCPU.setForeground(COLOR_TEXT_MAIN);
-
-            cardCPU.add(lblProcesoRunning);
-            cardCPU.add(lblModoEjecucion);
-            cardCPU.add(lblRegistrosCPU);
-
-            JPanel cardRAM = crearCardPanel("Ocupación de Memoria RAM");
-            barRAM = new JProgressBar(0, comp.getMemoriaRAM().getCapacidadTotal());
-            barRAM.setStringPainted(true);
-            barRAM.setForeground(COLOR_ACCENT_BLUE);
-
-            JLabel lblRAMInfo = new JLabel("RAM Total: " + comp.getMemoriaRAM().getCapacidadTotal() + " MB");
-            lblRAMInfo.setForeground(COLOR_TEXT_MAIN);
-
-            cardRAM.add(lblRAMInfo);
-            cardRAM.add(Box.createVerticalStrut(5));
-            cardRAM.add(barRAM);
-            
-            //PANEL DE CONTROL DE PLANIFICACIÓN
-            JPanel cardPlanificacion = crearCardPanel("Planificación (Cambio en Caliente)");
-            
-            JPanel pnlPolitica = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-            pnlPolitica.setOpaque(false);
-            JLabel lblPolitica = new JLabel("Política:");
-            lblPolitica.setForeground(COLOR_TEXT_MAIN);
-            cbPolitica = new JComboBox<>(PoliticaPlanificacion.values());
-            cbPolitica.setSelectedItem(comp.getPoliticaActual());
-            cbPolitica.setBackground(COLOR_CARD_BG);
-            cbPolitica.setForeground(COLOR_TEXT_MAIN);
-            pnlPolitica.add(lblPolitica);
-            pnlPolitica.add(cbPolitica);
-
-            JPanel pnlQuantum = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-            pnlQuantum.setOpaque(false);
-            JLabel lblQuantum = new JLabel("Quantum:");
-            lblQuantum.setForeground(COLOR_TEXT_MAIN);
-            spinnerQuantum = new JSpinner(new SpinnerNumberModel(comp.getQuantum(), 1, 100, 1));
-            spinnerQuantum.setBackground(COLOR_CARD_BG);
-            pnlQuantum.add(lblQuantum);
-            pnlQuantum.add(spinnerQuantum);
-            
-            // Listener para cambios
-            Runnable aplicarCambios = () -> {
-                PoliticaPlanificacion nuevaPol = (PoliticaPlanificacion) cbPolitica.getSelectedItem();
-                int nuevoQuantum = (int) spinnerQuantum.getValue();
-                computador.setPoliticaPlanificacion(nuevaPol, nuevoQuantum);
-                registrarLog("Computador " + computador.getId() + " cambió política a " + nuevaPol + " (Q=" + nuevoQuantum + ")");
-            };
-            cbPolitica.addActionListener(ev -> aplicarCambios.run());
-            spinnerQuantum.addChangeListener(ev -> aplicarCambios.run());
-
-            cardPlanificacion.add(pnlPolitica);
-            cardPlanificacion.add(pnlQuantum);
-
-            pnlTop.add(cardCPU);
-            pnlTop.add(cardRAM);
-            pnlTop.add(cardPlanificacion); // Añadir el nuevo panel
-            add(pnlTop, BorderLayout.NORTH);
-
-            // Centro: Visualización de las 4 Colas Exigidas
-            JPanel pnlColas = new JPanel(new GridLayout(2, 2, 8, 8));
-            pnlColas.setOpaque(false);
-
-            JPanel pnlNuevos = crearCardPanel("Cola de Nuevos (New Queue)");
-            modelNuevos = new DefaultTableModel(new Object[]{"ID", "Nombre", "Memoria MB", "Tipo"}, 0);
-            JTable tblNuevos = new JTable(modelNuevos);
-            estilarTabla(tblNuevos);
-            pnlNuevos.add(new JScrollPane(tblNuevos));
-
-            JPanel pnlListos = crearCardPanel("Cola de Listos (Ready Queue)");
-            modelListos = new DefaultTableModel(new Object[]{"ID", "Nombre", "Prioridad", "Deadline"}, 0);
-            JTable tblListos = new JTable(modelListos);
-            estilarTabla(tblListos);
-            pnlListos.add(new JScrollPane(tblListos));
-
-            JPanel pnlBloqueados = crearCardPanel("Cola de Bloqueados (Blocked Queue & Motivo)");
-            modelBloqueados = new DefaultTableModel(new Object[]{"ID", "Nombre", "Motivo Bloqueo"}, 0);
-            JTable tblBloqueados = new JTable(modelBloqueados);
-            estilarTabla(tblBloqueados);
-            pnlBloqueados.add(new JScrollPane(tblBloqueados));
-
-            JPanel pnlTerminados = crearCardPanel("Cola de Terminados (Exit Queue)");
-            modelTerminados = new DefaultTableModel(new Object[]{"ID", "Nombre", "Tiempo Modo SO"}, 0);
-            JTable tblTerminados = new JTable(modelTerminados);
-            estilarTabla(tblTerminados);
-            pnlTerminados.add(new JScrollPane(tblTerminados));
-
-            pnlColas.add(pnlNuevos);
-            pnlColas.add(pnlListos);
-            pnlColas.add(pnlBloqueados);
-            pnlColas.add(pnlTerminados);
-
-            add(pnlColas, BorderLayout.CENTER);
-        }
-
-        private JPanel crearCardPanel(String titulo) {
-            JPanel p = new JPanel();
-            p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
-            p.setBackground(COLOR_PANEL_BG);
-            p.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(COLOR_CARD_BG),
-                titulo, 0, 0, new Font("Segoe UI", Font.BOLD, 11), COLOR_ACCENT_BLUE));
-            return p;
-        }
-
-        public void refrescar() {
-            Cpu cpu = computador.getCpu();
-            if (cpu != null && cpu.estaOcupada()) {
-                Pcb p = cpu.getProcesoEnEjecucion();
-                lblProcesoRunning.setText("Ejecutando: " + p.getId() + " - " + p.getNombre());
-                lblRegistrosCPU.setText("PC: " + p.getProgramCounter() + " | MAR: " + p.getMemoryAddressRegister() + " | Prioridad: " + p.getPrioridad() + " | Deadline: " + p.getDeadline());
-
-                if (cpu.getModo() == enums.ModoEjecucion.SISTEMA_OPERATIVO) {
-                    lblModoEjecucion.setText("Modo: KERNEL / SISTEMA OPERATIVO");
-                    lblModoEjecucion.setForeground(COLOR_ACCENT_ORANGE);
-                } else {
-                    lblModoEjecucion.setText("Modo: USUARIO");
-                    lblModoEjecucion.setForeground(COLOR_ACCENT_GREEN);
-                }
-            } else {
-                lblProcesoRunning.setText("CPU Libre (Inactiva)");
-                lblRegistrosCPU.setText("PC: 0 | MAR: 0 | Prioridad: - | Deadline: -");
-                lblModoEjecucion.setText("Modo: USUARIO");
-                lblModoEjecucion.setForeground(COLOR_TEXT_MUTED);
-            }
-
-            int ramUsada = computador.getMemoriaRAM().getMemoriaUsada();
-            int ramTotal = computador.getMemoriaRAM().getCapacidadTotal();
-            barRAM.setMaximum(ramTotal);
-            barRAM.setValue(ramUsada);
-            barRAM.setString(ramUsada + " MB / " + ramTotal + " MB");
-
-            refrescarTablaCola(modelNuevos, computador.getColaNuevos(), p -> new Object[]{p.getId(), p.getNombre(), p.getMemoriaAsignada(), p.getTipo()});
-            refrescarTablaCola(modelListos, computador.getColaListos(), p -> new Object[]{p.getId(), p.getNombre(), p.getPrioridad(), p.getDeadline()});
-            refrescarTablaCola(modelBloqueados, computador.getColaBloqueados(), p -> new Object[]{p.getId(), p.getNombre(), p.getMotivoBloqueo()});
-            refrescarTablaCola(modelTerminados, computador.getColaTerminados(), p -> new Object[]{p.getId(), p.getNombre(), p.getTiempoModoSO()});
-        }
-
-        private void refrescarTablaCola(DefaultTableModel model, Cola<Pcb> cola, java.util.function.Function<Pcb, Object[]> extractor) {
-            model.setRowCount(0);
-            if (cola != null && !cola.esVacia()) {
-                Cola<Pcb> temp = new Cola<>();
-                while (!cola.esVacia()) {
-                    Pcb p = cola.desencolar();
-                    model.addRow(extractor.apply(p));
-                    temp.encolar(p);
-                }
-                while (!temp.esVacia()) {
-                    cola.encolar(temp.desencolar());
+    public static void main(String args[]) {
+        try {
+            for (javax.swing.UIManager.LookAndFeelInfo info : javax.swing.UIManager.getInstalledLookAndFeels()) {
+                if ("Nimbus".equals(info.getName())) {
+                    javax.swing.UIManager.setLookAndFeel(info.getClassName());
+                    break;
                 }
             }
+        } catch (Exception ex) {
+            ex.printStackTrace();
         }
+
+        java.awt.EventQueue.invokeLater(() -> new VistaMonitoreo().setVisible(true));
     }
-
-
 
 
     /**
@@ -881,27 +1006,6 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
     /**
      * @param args the command line arguments
      */
-    public static void main(String args[]) {
-        /* Set the Nimbus look and feel */
-        //<editor-fold defaultstate="collapsed" desc=" Look and feel setting code (optional) ">
-        /* If Nimbus (introduced in Java SE 6) is not available, stay with the default look and feel.
-         * For details see http://download.oracle.com/javase/tutorial/uiswing/lookandfeel/plaf.html 
-         */
-        try {
-            for (javax.swing.UIManager.LookAndFeelInfo info : javax.swing.UIManager.getInstalledLookAndFeels()) {
-                if ("Nimbus".equals(info.getName())) {
-                    javax.swing.UIManager.setLookAndFeel(info.getClassName());
-                    break;
-                }
-            }
-        } catch (ReflectiveOperationException | javax.swing.UnsupportedLookAndFeelException ex) {
-            logger.log(java.util.logging.Level.SEVERE, null, ex);
-        }
-        //</editor-fold>
-
-        /* Create and display the form */
-        java.awt.EventQueue.invokeLater(() -> new VistaMonitoreo().setVisible(true));
-    }
 
    
     // Variables declaration - do not modify//GEN-BEGIN:variables

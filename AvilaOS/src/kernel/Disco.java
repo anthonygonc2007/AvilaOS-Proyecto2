@@ -27,6 +27,8 @@ public class Disco implements IClockObserver {
     private SolicitudIO solicitudActiva;
     private boolean enTransferencia;
     private int ticksTransferenciaRestantes;
+    private int objetivoExtremo; // -1 si no hay recorrido obligatorio hacia extremo (199 o 0)
+    private long esperaSolicitudActiva;
 
     // --- Métricas globales y por política (0: FIFO, 1: SSTF, 2: SCAN, 3: C-SCAN) ---
     private int desplazamientoTotal;
@@ -59,6 +61,7 @@ public class Disco implements IClockObserver {
         this.solicitudActiva = null;
         this.enTransferencia = false;
         this.ticksTransferenciaRestantes = 0;
+        this.objetivoExtremo = -1;
 
         this.desplazamientoTotal = 0;
         this.totalSolicitudesAtendidas = 0;
@@ -91,16 +94,76 @@ public class Disco implements IClockObserver {
             }
 
             // Tiempo que esperó en la cola de E/S desde cicloLlegada hasta que empezó a atenderse
-            long espera = Math.max(0, cicloActual - solicitudActiva.getCicloLlegada());
-            tiempoEsperaTotal += espera;
-            esperaPorPolitica[idxPolitica] += espera;
+esperaSolicitudActiva = Math.max(0, cicloActual - solicitudActiva.getCicloLlegada());
+            tiempoEsperaTotal += esperaSolicitudActiva;
+            esperaPorPolitica[idxPolitica] += esperaSolicitudActiva;
 
             ticksTransferenciaRestantes = Math.max(1, solicitudActiva.getCantidadBloques());
-            enTransferencia = (cabezalActual == solicitudActiva.getBloqueObjetivo());
+            objetivoExtremo = calcularObjetivoExtremo(idxPolitica, solicitudActiva.getBloqueObjetivo());
+            enTransferencia = (objetivoExtremo == -1 && cabezalActual == solicitudActiva.getBloqueObjetivo());
+        } else if (!enTransferencia && objetivoExtremo == -1 && idxPolitica != 0) {
+            // Reevaluar en SSTF, SCAN y C-SCAN si la CPU encoló una petición mejor mientras el cabezal viaja
+            gestorConcurrencia.entrarColaES(null);
+            try {
+                if (!colaES.esVacia()) {
+                    colaES.agregarAlFinal(solicitudActiva);
+                    SolicitudIO mejor = politica.seleccionarSiguiente(colaES, cabezalActual, haciaArriba);
+                    if (mejor != null && mejor != solicitudActiva) {
+                        colaES.eliminar(mejor);
+                        tiempoEsperaTotal = Math.max(0L, tiempoEsperaTotal - esperaSolicitudActiva);
+                        esperaPorPolitica[idxPolitica] = Math.max(0L, esperaPorPolitica[idxPolitica] - esperaSolicitudActiva);
+
+                        solicitudActiva = mejor;
+                        esperaSolicitudActiva = Math.max(0, cicloActual - solicitudActiva.getCicloLlegada());
+                        tiempoEsperaTotal += esperaSolicitudActiva;
+                        esperaPorPolitica[idxPolitica] += esperaSolicitudActiva;
+
+                        ticksTransferenciaRestantes = Math.max(1, solicitudActiva.getCantidadBloques());
+                        objetivoExtremo = calcularObjetivoExtremo(idxPolitica, solicitudActiva.getBloqueObjetivo());
+                        enTransferencia = (objetivoExtremo == -1 && cabezalActual == solicitudActiva.getBloqueObjetivo());
+                    } else {
+                        colaES.eliminar(solicitudActiva);
+                    }
+                }
+            } finally {
+                gestorConcurrencia.salirColaES(null);
+            }
         }
 
         // 2. Fase 1: Desplazamiento del cabezal
         if (!enTransferencia) {
+            if (objetivoExtremo != -1) {
+                int distExtremo = Math.abs(objetivoExtremo - cabezalActual);
+                int pasoExtremo = Math.min(distExtremo, velocidadCabezal);
+
+                if (objetivoExtremo > cabezalActual) {
+                    cabezalActual += pasoExtremo;
+                    haciaArriba = true;
+                } else if (objetivoExtremo < cabezalActual) {
+                    cabezalActual -= pasoExtremo;
+                    haciaArriba = false;
+                }
+
+                desplazamientoTotal += pasoExtremo;
+                pistasPorPolitica[idxPolitica] += pasoExtremo;
+
+                if (cabezalActual == objetivoExtremo) {
+                    if (idxPolitica == 3 && objetivoExtremo > 0) {
+                        // C-SCAN: llega a 199 y salta a 0 sin sumar pistas por el salto de regreso
+                        cabezalActual = 0;
+                        haciaArriba = true;
+                    } else if (idxPolitica == 2) {
+                        // SCAN: llega a 199 (o 0) e invierte sentido
+                        haciaArriba = (objetivoExtremo == 0);
+                    }
+                    objetivoExtremo = -1;
+                    if (cabezalActual == solicitudActiva.getBloqueObjetivo()) {
+                        enTransferencia = true;
+                    }
+                }
+                return;
+            }
+            
             int objetivo = solicitudActiva.getBloqueObjetivo();
             int distancia = Math.abs(objetivo - cabezalActual);
             int paso = Math.min(distancia, velocidadCabezal);
@@ -134,7 +197,45 @@ public class Disco implements IClockObserver {
             solicitudesCompletadas.agregarAlFinal(solicitudActiva);
             solicitudActiva = null;
             enTransferencia = false;
+            objetivoExtremo = -1;
+            esperaSolicitudActiva = 0L;
         }
+    }
+    
+    private int calcularLimiteSuperiorBarrido() {
+        int limiteSuperior = (limiteArchivos > 0) ? (limiteArchivos - 1) : (totalBloques - 1);
+        if (solicitudActiva != null && solicitudActiva.getBloqueObjetivo() >= limiteArchivos) {
+            return totalBloques - 1;
+        }
+        for (int i = 0; i < colaES.getTamano(); i++) {
+            SolicitudIO s = colaES.obtener(i);
+            if (s != null && s.getBloqueObjetivo() >= limiteArchivos) {
+                return totalBloques - 1;
+            }
+        }
+        return limiteSuperior;
+    }
+
+    private int calcularObjetivoExtremo(int idxPolitica, int objetivo) {
+        int limiteSuperior = calcularLimiteSuperiorBarrido();
+        if (idxPolitica == 2) { // SCAN
+            if (haciaArriba && objetivo < cabezalActual) {
+                return limiteSuperior;
+            }
+            if (!haciaArriba && objetivo > cabezalActual) {
+                return 0;
+            }
+        } else if (idxPolitica == 3) { // C-SCAN
+            if (objetivo < cabezalActual) {
+                if (cabezalActual == limiteSuperior) {
+                    cabezalActual = 0;
+                    haciaArriba = true;
+                    return -1;
+                }
+                return limiteSuperior;
+            }
+        }
+        return -1;
     }
 
     private int obtenerIndicePoliticaActual() {
@@ -356,7 +457,7 @@ public class Disco implements IClockObserver {
     public int getVelocidadCabezal() { return velocidadCabezal; }
     public void setVelocidadCabezal(int velocidadCabezal) { this.velocidadCabezal = Math.max(1, velocidadCabezal); }
     public IPoliticaDisco getPolitica() { return politica; }
-    public void setPolitica(IPoliticaDisco politica) { if (politica != null) this.politica = politica; }
+    public void setPolitica(IPoliticaDisco politica) { if (politica != null) this.politica = politica; this.objetivoExtremo = -1; }
     public ListaEnlazada<SolicitudIO> getColaES() { return colaES; }
     public SolicitudIO getSolicitudActiva() { return solicitudActiva; }
     public boolean isEnTransferencia() { return enTransferencia; }

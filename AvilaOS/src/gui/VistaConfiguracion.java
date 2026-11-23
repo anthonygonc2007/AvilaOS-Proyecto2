@@ -303,8 +303,7 @@ btnIniciarSimulacion.addActionListener(e -> accionIniciarSimulacion());
         if (!ValidadorCampos.validarEnteroRango(txtTotalBloques, "Total de Bloques", 20, 2000)) return;
         int totalBloques = Integer.parseInt(txtTotalBloques.getText().trim());
 
-        if (!ValidadorCampos.validarEnteroRango(txtSwapBloques, "Tamaño Área Swap", 1, totalBloques - 10)) return;
-        if (!ValidadorCampos.validarEnteroRango(txtCabezalInicial, "Posición Inicial del Cabezal", 0, totalBloques - 1)) return;
+        if (!ValidadorCampos.validarEnteroRango(txtSwapBloques, "Tamaño Área Swap", 0, totalBloques - 10)) return;        if (!ValidadorCampos.validarEnteroRango(txtCabezalInicial, "Posición Inicial del Cabezal", 0, totalBloques - 1)) return;
         if (!ValidadorCampos.validarEnteroRango(txtVelocidadCabezal, "Velocidad del Cabezal", 1, totalBloques)) return;
         if (!ValidadorCampos.validarEnteroRango(txtDuracionCiclo, "Duración del Ciclo (ms)", 50, 10000)) return;
         if (!ValidadorCampos.validarEnteroRango(txtRamTotal, "Capacidad RAM", 16, 65536)) return;
