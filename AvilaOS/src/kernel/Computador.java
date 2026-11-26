@@ -191,10 +191,14 @@ public class Computador implements IClockObserver {
             }
 
             if (enCpu.getEstado() == EstadoProceso.EXIT) {
+                if (enCpu.isDeadlineFalladoRegistrado()) {
+                    enCpu.setMotivoBloqueo("DEADLINE_EXPIRADO");
+                } else {
+                    gestorMetricas.registrarProcesoCompletado(enCpu, 0, enCpu.getTiempoModoSO());
+                }
                 memoriaRAM.liberarProceso(enCpu);
                 colaTerminados.encolar(enCpu);
                 cpu.setProcesoEnEjecucion(null);
-                gestorMetricas.registrarProcesoCompletado(enCpu, 0, enCpu.getTiempoModoSO());
 
                 if (this.disco != null) {
                     planificadorMedianoPlazo.intentarReactivarSuspendidos(this, this.disco, cicloRelojActual);
@@ -245,41 +249,97 @@ public class Computador implements IClockObserver {
         }
         return null;
     }
-
-    private void decrementarDeadlines() {
-        decrementarDeadlinesCola(colaListos);
-        decrementarDeadlinesCola(colaBloqueados);
+    
+    private boolean tieneESPendienteEnDisco(Pcb p) {
+        if (p == null) return false;
+        return p.tieneOperacionIO()
+            || "E/S".equalsIgnoreCase(p.getMotivoBloqueo())
+            || (p.getMotivoBloqueo() != null && p.getMotivoBloqueo().toUpperCase().contains("DISCO"));
     }
 
-    private void decrementarDeadlinesCola(Cola<Pcb> cola) {
-        if (cola == null || cola.esVacia()) return;
+    private void registrarFalloDeadlineSiAplica(Pcb p) {
+        if (p != null && !p.isDeadlineFalladoRegistrado()) {
+            p.setDeadlineFalladoRegistrado(true);
+            if (gestorMetricas != null) {
+                gestorMetricas.registrarDeadlineFallado();
+            }
+        }
+    }
+
+    private void decrementarDeadlines() {
+    boolean ramLiberada = false;
+
+        // 1. Proceso actualmente en CPU
+        if (cpu.estaOcupada()) {
+            Pcb enCpu = cpu.getProcesoEnEjecucion();
+            enCpu.decrementarDeadline();
+            if (enCpu.getDeadline() <= 0 && enCpu.getEstado() != EstadoProceso.EXIT) {
+                registrarFalloDeadlineSiAplica(enCpu);
+                if (!tieneESPendienteEnDisco(enCpu)) {
+                    enCpu.setEstado(EstadoProceso.EXIT);
+                    enCpu.setMotivoBloqueo("DEADLINE_EXPIRADO");
+                    memoriaRAM.liberarProceso(enCpu);
+                    colaTerminados.encolar(enCpu);
+                    cpu.setProcesoEnEjecucion(null);
+                    ramLiberada = true;
+                }
+            }
+        }
+
+        // 2. Todas las colas activas (RAM, Disco y Swap)
+        ramLiberada |= decrementarDeadlinesCola(colaNuevos, false, false);
+        ramLiberada |= decrementarDeadlinesCola(colaListos, true, false);
+        ramLiberada |= decrementarDeadlinesCola(colaBloqueados, true, false);
+        decrementarDeadlinesCola(colaListosSuspendidos, false, true);
+        decrementarDeadlinesCola(colaBloqueadosSuspendidos, false, true);
+
+        if (ramLiberada) {
+            if (this.disco != null) {
+                planificadorMedianoPlazo.intentarReactivarSuspendidos(this, this.disco, cicloRelojActual);
+                planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
+            } else {
+                intentarAdmitirNuevos();
+            }
+        }
+    }
+
+    private boolean decrementarDeadlinesCola(Cola<Pcb> cola, boolean ocupaRAM, boolean ocupaSwap) {
+        if (cola == null || cola.esVacia()) return false;
         Cola<Pcb> aux = new Cola<>();
         boolean ramLiberada = false;
 
         while (!cola.esVacia()) {
             Pcb p = cola.desencolar();
-            p.setDeadline(p.getDeadline() - 1);
+            p.decrementarDeadline();
 
             if (p.getDeadline() <= 0 && p.getEstado() != EstadoProceso.EXIT) {
+                registrarFalloDeadlineSiAplica(p);
+
+                // Si ya envió solicitud al disco, espera a que el disco termine para cerrar limpiamente
+                if (tieneESPendienteEnDisco(p)) {
+                    aux.encolar(p);
+                    continue;
+                }
+
+                if (ocupaRAM) {
+                    memoriaRAM.liberarProceso(p);
+                    ramLiberada = true;
+                } else if (ocupaSwap && this.disco != null) {
+                    this.disco.liberarProcesoDeSwap(p.getId());
+                }
+
                 p.setEstado(EstadoProceso.EXIT);
-                memoriaRAM.liberarProceso(p);
+                p.setMotivoBloqueo("DEADLINE_EXPIRADO");
                 colaTerminados.encolar(p);
-                ramLiberada = true;
-                
-                gestorMetricas.registrarDeadlineFallado(); 
-                gestorMetricas.registrarProcesoCompletado(p, 0, p.getTiempoModoSO());
             } else {
                 aux.encolar(p);
             }
         }
+
         while (!aux.esVacia()) {
             cola.encolar(aux.desencolar());
         }
-
-        if (ramLiberada && this.disco != null) {
-            planificadorMedianoPlazo.intentarReactivarSuspendidos(this, this.disco, cicloRelojActual);
-            planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
-        }
+        return ramLiberada;
     }
 
     private void revisarDesbloqueados() {
@@ -328,13 +388,23 @@ public class Computador implements IClockObserver {
 
         Cola<Pcb> auxBloq = new Cola<>();
         boolean encontrado = false;
+        boolean ramLiberada = false;
+
         while (!colaBloqueados.esVacia()) {
             Pcb p = colaBloqueados.desencolar();
             if (!encontrado && p.getId().equals(idProceso)) {
-                p.setMotivoBloqueo("");
-                p.setEstado(EstadoProceso.READY);
-                colaListos.encolar(p);
                 encontrado = true;
+                if (p.isDeadlineFalladoRegistrado()) {
+                    memoriaRAM.liberarProceso(p);
+                    ramLiberada = true;
+                    p.setMotivoBloqueo("DEADLINE_EXPIRADO");
+                    p.setEstado(EstadoProceso.EXIT);
+                    colaTerminados.encolar(p);
+                } else {
+                    p.setMotivoBloqueo("");
+                    p.setEstado(EstadoProceso.READY);
+                    colaListos.encolar(p);
+                }
             } else {
                 auxBloq.encolar(p);
             }
@@ -343,16 +413,30 @@ public class Computador implements IClockObserver {
             colaBloqueados.encolar(auxBloq.desencolar());
         }
 
+        if (ramLiberada && this.disco != null) {
+            planificadorMedianoPlazo.intentarReactivarSuspendidos(this, this.disco, cicloRelojActual);
+            planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
+        }
+
         if (encontrado) return;
 
         Cola<Pcb> auxSusp = new Cola<>();
         while (!colaBloqueadosSuspendidos.esVacia()) {
             Pcb p = colaBloqueadosSuspendidos.desencolar();
             if (!encontrado && p.getId().equals(idProceso)) {
-                p.setMotivoBloqueo("");
-                p.setEstado(EstadoProceso.LISTO_SUSPENDIDO);
-                colaListosSuspendidos.encolar(p);
                 encontrado = true;
+                if (p.isDeadlineFalladoRegistrado()) {
+                     if (this.disco != null) {
+                        this.disco.liberarProcesoDeSwap(p.getId());
+                    }
+                    p.setMotivoBloqueo("DEADLINE_EXPIRADO");
+                    p.setEstado(EstadoProceso.EXIT);
+                    colaTerminados.encolar(p);
+                } else {
+                    p.setMotivoBloqueo("");
+                    p.setEstado(EstadoProceso.LISTO_SUSPENDIDO);
+                    colaListosSuspendidos.encolar(p);
+                }
             } else {
                 auxSusp.encolar(p);
             }

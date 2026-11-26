@@ -160,7 +160,7 @@ public class DialogoNuevoProceso {
             "=== PCB Avila OS ===\n\n" +
             "ID Proceso:           " + p.getId() + "\n" +
             "Nombre:               " + p.getNombre() + "\n" +
-            "Estado (7 Estados):   " + p.getEstado() + "\n" +
+            "Estado                " + p.getEstado() + "\n" +
             "Tipo:                 " + p.getTipo() + "\n" +
             "Prioridad:            " + p.getPrioridad() + "\n" +
             "Memoria Asignada:     " + p.getMemoriaAsignada() + " bloques\n" +

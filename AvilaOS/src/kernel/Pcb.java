@@ -36,6 +36,9 @@ public class Pcb {
     // Contador de tiempo invertido en Modo Sistema Operativo
     private int tiempoModoSO;
     
+    // Bandera para registrar incumplimiento de deadline
+    private boolean deadlineFalladoRegistrado;
+    
     // CAMPOS PARA PROYECTO 2 (SISTEMA DE ARCHIVOS Y DISCO)
     private TipoOperacionIO operacionIO;
     private String rutaArchivo;
@@ -59,6 +62,7 @@ public class Pcb {
         this.motivoBloqueo = "";
         this.tiempoModoSO = 0;
         this.tiempoEsperaIO = 0;
+        this.deadlineFalladoRegistrado = false;
         
         // Inicializados por defecto para operaciones de E/S
         this.operacionIO = null;
@@ -90,6 +94,14 @@ public class Pcb {
     
     public boolean tieneOperacionIO() {
         return this.operacionIO != null;
+    }
+    
+    public boolean isDeadlineFalladoRegistrado() {
+        return deadlineFalladoRegistrado;
+    }
+
+    public void setDeadlineFalladoRegistrado(boolean deadlineFalladoRegistrado) {
+        this.deadlineFalladoRegistrado = deadlineFalladoRegistrado;
     }
     
     public int getTiempoModoSO() { return tiempoModoSO; }

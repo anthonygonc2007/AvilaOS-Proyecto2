@@ -64,7 +64,7 @@ public class PanelMapaDisco extends JPanel {
         JPanel pnlLeyenda = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
         pnlLeyenda.setOpaque(false);
         pnlLeyenda.add(crearItemLeyenda("Libre (FS)", new Color(34, 45, 65)));
-        pnlLeyenda.add(crearItemLeyenda("Archivo (Color FAT)", new Color(46, 204, 113)));
+        pnlLeyenda.add(crearItemLeyenda("Archivo", new Color(46, 204, 113)));
         pnlLeyenda.add(crearItemLeyenda("Swap Libre", new Color(65, 52, 32)));
         pnlLeyenda.add(crearItemLeyenda("Swap Ocupado", new Color(231, 76, 60)));
         pnlLeyenda.add(crearItemLeyenda("Cabezal Activo", Color.YELLOW));

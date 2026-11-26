@@ -149,7 +149,7 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
         tabs.addTab("Sistema de Archivos y Mapa de Disco", splitFSyDisco);
 
         // Pestaña 2: Las 6 Colas de Procesos (incluyendo Swap: Listo/Susp y Bloqueado/Susp)
-        tabs.addTab("Colas de Procesos (6 Estados) y Swap", crearPanelColas());
+        tabs.addTab("Colas de Procesos y Swap", crearPanelColas());
 
         // Pestaña 3: Métricas en Vivo y Gráficas JFreeChart (Día 4)
         tabs.addTab("Métricas de Disco, Cabezal y Políticas", crearPanelMetricasYGraficas());
@@ -176,7 +176,7 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
         btnPausar = crearBoton("Pausar", COLOR_ACCENT_ORANGE);
         JButton btnReiniciar = crearBoton("Reiniciar", COLOR_CARD_BG);
         JButton btnProcManual = crearBoton("Proceso Manual", COLOR_ACCENT_PURPLE);
-        JButton btnProcRandom = crearBoton("Proceso Random", COLOR_ACCENT_PURPLE);
+        JButton btnProcRandom = crearBoton("Proceso Aleatorio", COLOR_ACCENT_PURPLE);
         JButton btnExportar = crearBoton("Exportar JSON", COLOR_ACCENT_BLUE);
 
         btnIniciar.addActionListener(e -> {
@@ -312,22 +312,22 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
         pnl.setBackground(COLOR_BG);
         pnl.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
-        modelNuevos = new DefaultTableModel(new Object[]{"ID", "Nombre", "Op. E/S", "Archivo", "Mem"}, 0) {
+        modelNuevos = new DefaultTableModel(new Object[]{"ID", "Nombre", "Op. E/S", "Mem", "Deadline"}, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
         modelListos = new DefaultTableModel(new Object[]{"ID", "Nombre", "Op. E/S", "Prio", "Deadline"}, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
-        modelBloqueados = new DefaultTableModel(new Object[]{"ID", "Nombre", "Motivo Bloqueo", "Archivo"}, 0) {
+        modelBloqueados = new DefaultTableModel(new Object[]{"ID", "Nombre", "Motivo Bloqueo", "Archivo", "Deadline"}, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
-        modelListosSusp = new DefaultTableModel(new Object[]{"ID", "Nombre", "Op. E/S", "Mem", "Ubicación"}, 0) {
+        modelListosSusp = new DefaultTableModel(new Object[]{"ID", "Nombre", "Op. E/S", "Mem", "Deadline"}, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
-        modelBloqSusp = new DefaultTableModel(new Object[]{"ID", "Nombre", "Motivo", "Mem", "Ubicación"}, 0) {
+        modelBloqSusp = new DefaultTableModel(new Object[]{"ID", "Nombre", "Motivo", "Mem", "Deadline"}, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
-        modelTerminados = new DefaultTableModel(new Object[]{"ID", "Nombre", "T. Modo SO", "Estado Final"}, 0) {
+        modelTerminados = new DefaultTableModel(new Object[]{"ID", "Nombre", "T. Modo SO", "Deadline", "Resultado"}, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
 
@@ -685,17 +685,18 @@ int totalBloques = (config.datosFS != null && config.datosFS.diskConfig != null 
             lblRamInfo.setText("RAM: " + ramUsada + " / " + ramTotal + " MB");
 
             refrescarTablaCola(modelNuevos, computador.getColaNuevos(),
-                p -> new Object[]{p.getId(), p.getNombre(), p.getOperacionIO(), p.getRutaArchivo(), p.getMemoriaAsignada()});
+                p -> new Object[]{p.getId(), p.getNombre(), p.getOperacionIO(), p.getMemoriaAsignada(), p.getDeadline()});
             refrescarTablaCola(modelListos, computador.getColaListos(),
                 p -> new Object[]{p.getId(), p.getNombre(), p.getOperacionIO(), p.getPrioridad(), p.getDeadline()});
             refrescarTablaCola(modelBloqueados, computador.getColaBloqueados(),
-                p -> new Object[]{p.getId(), p.getNombre(), p.getMotivoBloqueo(), p.getRutaArchivo()});
+                p -> new Object[]{p.getId(), p.getNombre(), p.getMotivoBloqueo(), p.getRutaArchivo(), p.getDeadline()});
             refrescarTablaCola(modelListosSusp, computador.getColaListosSuspendidos(),
-                p -> new Object[]{p.getId(), p.getNombre(), p.getOperacionIO(), p.getMemoriaAsignada(), "SWAP"});
+                p -> new Object[]{p.getId(), p.getNombre(), p.getOperacionIO(), p.getMemoriaAsignada(), p.getDeadline()});
             refrescarTablaCola(modelBloqSusp, computador.getColaBloqueadosSuspendidos(),
-                p -> new Object[]{p.getId(), p.getNombre(), p.getMotivoBloqueo(), p.getMemoriaAsignada(), "SWAP"});
+                p -> new Object[]{p.getId(), p.getNombre(), p.getMotivoBloqueo(), p.getMemoriaAsignada(), p.getDeadline()});
             refrescarTablaCola(modelTerminados, computador.getColaTerminados(),
-                p -> new Object[]{p.getId(), p.getNombre(), p.getTiempoModoSO(), p.getEstado()});
+                p -> new Object[]{p.getId(),p.getNombre(),p.getTiempoModoSO(),p.getDeadline(), p.isDeadlineFalladoRegistrado() ? "DEADLINE_EXPIRADO" : "A TIEMPO"
+                });
         }
 
         if (disco != null) {
