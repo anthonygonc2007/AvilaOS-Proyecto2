@@ -15,8 +15,26 @@ public class RelojGlobal implements Runnable {
     private static Thread hiloReloj;
 
     public static synchronized void registrarObservador(IClockObserver obs) {
+        // Evitar registros duplicados (importante al reiniciar la simulación)
+        for (int i = 0; i < observadores.getTamano(); i++) {
+            if (observadores.obtener(i) == obs) return;
+        }
         observadores.agregarAlFinal(obs);
     }
+
+    // ══════ CAMBIO: nuevo método para desregistrar observadores ══════
+    public static synchronized void desregistrarObservador(IClockObserver obs) {
+        if (obs == null) return;
+        observadores.eliminar(obs);
+    }
+
+    // ══════ CAMBIO: limpiar todos los observadores (útil en reinicio total) ══════
+    public static synchronized void limpiarObservadores() {
+        while (!observadores.esVacia()) {
+            observadores.eliminar(observadores.obtener(0));
+        }
+    }
+    // ══════════════════════════════════════════════════════════════════
 
     public static synchronized void setDuracionCicloMs(int ms) {
         duracionCicloMs = Math.max(50, ms);

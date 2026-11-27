@@ -158,4 +158,14 @@ public class Pcb {
 
     public int getCantidadBloques() { return cantidadBloques; }
     public void setCantidadBloques(int cantidadBloques) { this.cantidadBloques = Math.max(1, cantidadBloques); }
+
+    
+private boolean swapOutPendiente = false;
+private boolean reactivacionPendiente = false;
+
+public boolean isSwapOutPendiente() { return swapOutPendiente; }
+public void setSwapOutPendiente(boolean b) { this.swapOutPendiente = b; }
+
+public boolean isReactivacionPendiente() { return reactivacionPendiente; }
+public void setReactivacionPendiente(boolean b) { this.reactivacionPendiente = b; }
 }

@@ -202,19 +202,22 @@ esperaSolicitudActiva = Math.max(0, cicloActual - solicitudActiva.getCicloLlegad
         }
     }
     
-    private int calcularLimiteSuperiorBarrido() {
-        int limiteSuperior = (limiteArchivos > 0) ? (limiteArchivos - 1) : (totalBloques - 1);
-        if (solicitudActiva != null && solicitudActiva.getBloqueObjetivo() >= limiteArchivos) {
-            return totalBloques - 1;
-        }
-        for (int i = 0; i < colaES.getTamano(); i++) {
-            SolicitudIO s = colaES.obtener(i);
-            if (s != null && s.getBloqueObjetivo() >= limiteArchivos) {
-                return totalBloques - 1;
-            }
-        }
-        return limiteSuperior;
+private int calcularLimiteSuperiorBarrido() {
+    int limiteSuperior = (limiteArchivos > 0) ? (limiteArchivos - 1) : (totalBloques - 1);
+
+    if (solicitudActiva != null) {
+        int finActiva = solicitudActiva.getBloqueObjetivo() + solicitudActiva.getCantidadBloques() - 1;
+        if (finActiva >= limiteArchivos) return totalBloques - 1;
     }
+    for (int i = 0; i < colaES.getTamano(); i++) {
+        SolicitudIO s = colaES.obtener(i);
+        if (s != null) {
+            int fin = s.getBloqueObjetivo() + s.getCantidadBloques() - 1;
+            if (fin >= limiteArchivos) return totalBloques - 1;
+        }
+    }
+    return limiteSuperior;
+}
 
     private int calcularObjetivoExtremo(int idxPolitica, int objetivo) {
         int limiteSuperior = calcularLimiteSuperiorBarrido();

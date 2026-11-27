@@ -10,34 +10,36 @@ import enums.EstadoProceso;
 
 public class PoliticaPrioridades implements Planificador {
 
-    @Override
-    public void planificar(Cola<Pcb> colaListos, Cpu cpu) {
-        if (colaListos == null || colaListos.esVacia()) return;
-        
-        reordenarPorPrioridad(colaListos);
-        Pcb primeroListo = colaListos.verFrente();
-        if (!cpu.estaOcupada()) {
-            // Si la CPU está libre, simplemente entra el mejor
-            Pcb siguiente = colaListos.desencolar();
+   @Override
+public void planificar(Cola<Pcb> colaListos, Cpu cpu) {
+    if (cpu == null || colaListos == null || colaListos.esVacia()) return;
+
+    // Reordenar ANTES de consultar el frente, si no primeroListo queda obsoleto
+    reordenarPorPrioridad(colaListos);
+    Pcb primeroListo = colaListos.verFrente();
+
+    if (!cpu.estaOcupada()) {
+        Pcb siguiente = colaListos.desencolar();
+        if (siguiente != null) {
             siguiente.setEstado(EstadoProceso.RUNNING);
             cpu.setProcesoEnEjecucion(siguiente);
-        } else {
-            Pcb actual = cpu.getProcesoEnEjecucion();
-            if (actual != null && primeroListo != null) {
-                if (primeroListo.getPrioridad() <= actual.getPrioridad()) {
-                    // Desalojar proceso actual
-                    actual.setEstado(EstadoProceso.READY);
-                    colaListos.encolar(actual);
-                    reordenarPorPrioridad(colaListos); // Reordenar por si el desalojado tiene mejor prioridad que otros
+        }
+        return;
+    }
 
-                    // Entra el nuevo mejor
-                    Pcb nuevo = colaListos.desencolar();
-                    nuevo.setEstado(EstadoProceso.RUNNING);
-                    cpu.setProcesoEnEjecucion(nuevo);
-                }
-            }
+    Pcb actual = cpu.getProcesoEnEjecucion();
+    if (actual != null && primeroListo != null
+        && primeroListo.getPrioridad() <= actual.getPrioridad()) {
+        actual.setEstado(EstadoProceso.READY);
+        colaListos.encolar(actual);
+        reordenarPorPrioridad(colaListos);
+        Pcb nuevo = colaListos.desencolar();
+        if (nuevo != null) {
+            nuevo.setEstado(EstadoProceso.RUNNING);
+            cpu.setProcesoEnEjecucion(nuevo);
         }
     }
+}
 
     @Override
     public void verificarDeadlines(Cola<Pcb> colaListos) {

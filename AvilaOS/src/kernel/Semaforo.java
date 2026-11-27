@@ -20,32 +20,28 @@ public class Semaforo {
         this.finCola = null;
     }
 
-    public synchronized boolean semWait(Pcb proceso, String motivo) {
-        // Registrar costo de ejecución en Modo SO (Overhead de kernel)
-        if (proceso != null) {
-            proceso.incrementarTiempoModoSO(COSTO_INSTRUCCION_SO);
-        }
-
-        valor--;
-        if (valor < 0) {
-            // Asignar el estado explícito de bloqueo según el contexto o fallback a BLOCKED
-            EstadoProceso estadoBloqueo = MapeadorMotivo.obtenerEstadoPorMotivo(motivo);
-            proceso.setEstado(estadoBloqueo);
-            proceso.setMotivoBloqueo(motivo);
-            
-            // Encolar en la cola interna del semáforo
-            NodoPcb nuevoNodo = new NodoPcb(proceso);
-            if (finCola == null) {
-                frenteCola = nuevoNodo;
-                finCola = nuevoNodo;
-            } else {
-                finCola.siguiente = nuevoNodo;
-                finCola = nuevoNodo;
-            }
-            return false; // Proceso bloqueado
-        }
-        return true; // Acceso concedido
+public synchronized boolean semWait(Pcb proceso, String motivo) {
+    if (proceso != null) {
+        proceso.incrementarTiempoModoSO(COSTO_INSTRUCCION_SO);
     }
+
+    valor--;
+    if (valor < 0) {
+        if (proceso == null) {
+            valor++;   // rollback: un actor nulo no puede bloquearse
+            return true;
+        }
+        EstadoProceso estadoBloqueo = MapeadorMotivo.obtenerEstadoPorMotivo(motivo);
+        proceso.setEstado(estadoBloqueo);
+        proceso.setMotivoBloqueo(motivo);
+
+        NodoPcb nuevoNodo = new NodoPcb(proceso);
+        if (finCola == null) { frenteCola = nuevoNodo; finCola = nuevoNodo; }
+        else { finCola.siguiente = nuevoNodo; finCola = nuevoNodo; }
+        return false;
+    }
+    return true;
+}
 
     public synchronized Pcb semSignal(Pcb procesoActual) {
         // Registrar costo de ejecución en Modo SO para el proceso que invoca el Signal

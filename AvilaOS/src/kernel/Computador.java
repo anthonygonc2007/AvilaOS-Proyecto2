@@ -23,7 +23,7 @@ public class Computador implements IClockObserver {
     private final PlanificadorMedianoPlazo planificadorMedianoPlazo;
     private final Semaforo mutexColaDisco;
     private int cicloRelojActual;
-    
+
     // Colas del ciclo de vida del proceso
     private final Cola<Pcb> colaNuevos;
     private final Cola<Pcb> colaListos;
@@ -50,7 +50,7 @@ public class Computador implements IClockObserver {
         this.planificadorMedianoPlazo = new PlanificadorMedianoPlazo();
         this.mutexColaDisco = new Semaforo(1);
         this.cicloRelojActual = 0;
-        
+
         this.colaNuevos = new Cola<>();
         this.colaListos = new Cola<>();
         this.colaBloqueados = new Cola<>();
@@ -60,14 +60,22 @@ public class Computador implements IClockObserver {
 
         this.quantum = 2;
         setPoliticaPlanificacion(PoliticaPlanificacion.FCFS, this.quantum);
-        
+
         RelojGlobal.registrarObservador(this);
     }
+
+    // ══════ CAMBIO 1: nuevo método dispose() ══════
+    // Llamarlo antes de reiniciar la simulación para evitar que queden
+    // dos Computador "tickeando" al mismo tiempo (bug al pulsar Reiniciar).
+    public void dispose() {
+        RelojGlobal.desregistrarObservador(this);
+    }
+    // ══════════════════════════════════════════════
 
     public void setPoliticaPlanificacion(PoliticaPlanificacion politica, int quantum) {
         this.politicaActual = politica;
         this.quantum = quantum;
-        
+
         switch (politica) {
             case ROUND_ROBIN:
                 this.planificador = new PoliticaRoundRobin(quantum);
@@ -88,15 +96,15 @@ public class Computador implements IClockObserver {
     public boolean admitirProceso(Pcb proceso) {
         if (!this.id.equals(proceso.getComputadorId())) {
             System.out.println("ALERTA DE SEGURIDAD: Intento de migración bloqueado. " +
-                               "El proceso " + proceso.getId() + 
-                               " pertenece a " + proceso.getComputadorId() + 
+                               "El proceso " + proceso.getId() +
+                               " pertenece a " + proceso.getComputadorId() +
                                " y no puede ingresar a " + this.id);
             return false;
         }
-        
+
         proceso.setEstado(EstadoProceso.NEW);
         this.colaNuevos.encolar(proceso);
-        
+
         if (this.disco != null) {
             planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
         } else {
@@ -118,7 +126,7 @@ public class Computador implements IClockObserver {
                 aux.encolar(proceso);
             }
         }
-        
+
         while (!aux.esVacia()) {
             colaNuevos.encolar(aux.desencolar());
         }
@@ -131,7 +139,7 @@ public class Computador implements IClockObserver {
             intentarAdmitirNuevos();
         }
 
-        revisarDesbloqueados(); 
+        revisarDesbloqueados();
         decrementarDeadlines();
         if (planificador != null) {
             planificador.planificar(colaListos, cpu);
@@ -190,34 +198,48 @@ public class Computador implements IClockObserver {
                 cpu.ejecutarCiclo();
             }
 
-            if (enCpu.getEstado() == EstadoProceso.EXIT) {
-                if (enCpu.isDeadlineFalladoRegistrado()) {
-                    enCpu.setMotivoBloqueo("DEADLINE_EXPIRADO");
-                } else {
-                    gestorMetricas.registrarProcesoCompletado(enCpu, 0, enCpu.getTiempoModoSO());
-                }
-                memoriaRAM.liberarProceso(enCpu);
-                colaTerminados.encolar(enCpu);
-                cpu.setProcesoEnEjecucion(null);
+     // ══════ CAMBIO 2 CORREGIDO ══════
+// El guard ahora también permite procesar el EXIT si la CPU se vació sola (Cpu.ejecutarCiclo)
+if ((cpu.getProcesoEnEjecucion() == enCpu || !cpu.estaOcupada()) 
+     && enCpu.getEstado() == EstadoProceso.EXIT) {
+    
+    if (enCpu.isDeadlineFalladoRegistrado()) {
+        enCpu.setMotivoBloqueo("DEADLINE_EXPIRADO");
+    } else {
+        gestorMetricas.registrarProcesoCompletado(enCpu, 0, enCpu.getTiempoModoSO());
+    }
 
-                if (this.disco != null) {
-                    planificadorMedianoPlazo.intentarReactivarSuspendidos(this, this.disco, cicloRelojActual);
-                    planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
-                } else {
-                    intentarAdmitirNuevos();
-                }
-            }
+    // Cancelar cualquier OperacionPendiente / swap pendiente del proceso
+    if (sistemaArchivos != null) {
+        sistemaArchivos.cancelarOperacionPendiente(enCpu.getId());
+    }
+    planificadorMedianoPlazo.cancelarSwapDeProceso(
+        enCpu.getId(), enCpu, this, this.disco);
+
+    memoriaRAM.liberarProceso(enCpu);
+    colaTerminados.encolar(enCpu);
+    cpu.setProcesoEnEjecucion(null);
+
+    if (this.disco != null) {
+        planificadorMedianoPlazo.intentarReactivarSuspendidos(this, this.disco, cicloRelojActual);
+        planificadorMedianoPlazo.gestionarAdmisionYSuspension(this, this.disco, cicloRelojActual);
+    } else {
+        intentarAdmitirNuevos();
+    }
+}
+// ═══════════════════════════════════════════
+            // ═══════════════════════════════════════════════════════════════
         }
     }
 
     private void procesarPcbBuffer(Pcb p, BufferAcotado[] buffers) {
         BufferAcotado buf = buscarBuffer(p.getBufferAsociadoId(), buffers);
         if (buf == null) {
-            cpu.ejecutarCiclo(); 
+            cpu.ejecutarCiclo();
             return;
         }
 
-        int cicloActual = p.getTiempoModoSO(); 
+        int cicloActual = p.getTiempoModoSO();
         p.incrementarTiempoModoSO(1);
 
         if (cicloActual % Math.max(1, p.getCiclosProducirConsumir()) == 0) {
@@ -241,7 +263,7 @@ public class Computador implements IClockObserver {
             cpu.ejecutarCiclo();
         }
     }
- 
+
     private BufferAcotado buscarBuffer(String idBuffer, BufferAcotado[] buffers) {
         if (buffers == null) return null;
         for (BufferAcotado b : buffers) {
@@ -249,12 +271,14 @@ public class Computador implements IClockObserver {
         }
         return null;
     }
-    
+
     private boolean tieneESPendienteEnDisco(Pcb p) {
         if (p == null) return false;
         return p.tieneOperacionIO()
             || "E/S".equalsIgnoreCase(p.getMotivoBloqueo())
-            || (p.getMotivoBloqueo() != null && p.getMotivoBloqueo().toUpperCase().contains("DISCO"));
+            || (p.getMotivoBloqueo() != null && p.getMotivoBloqueo().toUpperCase().contains("DISCO"))
+            || p.isSwapOutPendiente()
+            || p.isReactivacionPendiente();
     }
 
     private void registrarFalloDeadlineSiAplica(Pcb p) {
@@ -267,7 +291,7 @@ public class Computador implements IClockObserver {
     }
 
     private void decrementarDeadlines() {
-    boolean ramLiberada = false;
+        boolean ramLiberada = false;
 
         // 1. Proceso actualmente en CPU
         if (cpu.estaOcupada()) {
@@ -278,6 +302,15 @@ public class Computador implements IClockObserver {
                 if (!tieneESPendienteEnDisco(enCpu)) {
                     enCpu.setEstado(EstadoProceso.EXIT);
                     enCpu.setMotivoBloqueo("DEADLINE_EXPIRADO");
+
+                    // ══════ CAMBIO 3: cancelar pendientes al morir en CPU ══════
+                    if (sistemaArchivos != null) {
+                        sistemaArchivos.cancelarOperacionPendiente(enCpu.getId());
+                    }
+                    planificadorMedianoPlazo.cancelarSwapDeProceso(
+                        enCpu.getId(), enCpu, this, this.disco);
+                    // ══════════════════════════════════════════════════════════
+
                     memoriaRAM.liberarProceso(enCpu);
                     colaTerminados.encolar(enCpu);
                     cpu.setProcesoEnEjecucion(null);
@@ -321,12 +354,26 @@ public class Computador implements IClockObserver {
                     continue;
                 }
 
+                // ══════ CAMBIO 4: cancelar pendientes + manejar swap-out a medias ══════
                 if (ocupaRAM) {
                     memoriaRAM.liberarProceso(p);
                     ramLiberada = true;
                 } else if (ocupaSwap && this.disco != null) {
+                    // Si murió mientras el swap-out aún estaba en vuelo, su RAM
+                    // todavía no se había liberado: liberarla ahora.
+                    if (p.isSwapOutPendiente()) {
+                        memoriaRAM.liberarProceso(p);
+                        ramLiberada = true;
+                    }
                     this.disco.liberarProcesoDeSwap(p.getId());
                 }
+
+                if (sistemaArchivos != null) {
+                    sistemaArchivos.cancelarOperacionPendiente(p.getId());
+                }
+                planificadorMedianoPlazo.cancelarSwapDeProceso(
+                    p.getId(), p, this, this.disco);
+                // ══════════════════════════════════════════════════════════════════
 
                 p.setEstado(EstadoProceso.EXIT);
                 p.setMotivoBloqueo("DEADLINE_EXPIRADO");
@@ -343,17 +390,50 @@ public class Computador implements IClockObserver {
     }
 
     private void revisarDesbloqueados() {
+        if (colaBloqueadosSuspendidos != null && !colaBloqueadosSuspendidos.esVacia()) {
+        Cola<Pcb> auxSusp = new Cola<>();
+        while (!colaBloqueadosSuspendidos.esVacia()) {
+            Pcb p = colaBloqueadosSuspendidos.desencolar();
+            // Si el proceso ya expiró o fue marcado para morir
+            if (p.getDeadline() <= 0 || p.getEstado() == EstadoProceso.EXIT || "DEADLINE_EXPIRADO".equals(p.getMotivoBloqueo())) {
+                if (this.disco != null) this.disco.liberarProcesoDeSwap(p.getId());
+                if (sistemaArchivos != null) sistemaArchivos.cancelarOperacionPendiente(p.getId());
+                planificadorMedianoPlazo.cancelarSwapDeProceso(p.getId(), p, this, this.disco);
+                p.setEstado(EstadoProceso.EXIT);
+                colaTerminados.encolar(p);
+            } else {
+                auxSusp.encolar(p);
+            }
+        }
+        while (!auxSusp.esVacia()) {
+            colaBloqueadosSuspendidos.encolar(auxSusp.desencolar());
+        }
+        }
         if (this.disco != null) {
             SolicitudIO completada = disco.extraerSolicitudCompletada();
             while (completada != null) {
                 TipoOperacionIO op = completada.getOperacion();
-                if (op == TipoOperacionIO.CREAR || op == TipoOperacionIO.LEER ||
-                    op == TipoOperacionIO.ACTUALIZAR || op == TipoOperacionIO.ELIMINAR) {
+
+                // ══════ CAMBIO 5: despachar SUSPENDER / REACTIVAR al planificador ══════
+                // Antes solo se procesaban CREAR/LEER/ACTUALIZAR/ELIMINAR, por lo que
+                // las solicitudes de swap quedaban "decorativas". Ahora, cuando el disco
+                // termina un SUSPENDER, es aquí donde recién se libera la RAM; cuando
+                // termina un REACTIVAR, recién aquí el proceso vuelve a RAM y a colaListos.
+                if (op == TipoOperacionIO.SUSPENDER) {
+                    planificadorMedianoPlazo.completarSuspension(
+                        completada.getIdProceso(), this);
+                } else if (op == TipoOperacionIO.REACTIVAR) {
+                    planificadorMedianoPlazo.completarReactivacion(
+                        completada.getIdProceso(), this, this.disco);
+                } else if (op == TipoOperacionIO.CREAR || op == TipoOperacionIO.LEER
+                        || op == TipoOperacionIO.ACTUALIZAR || op == TipoOperacionIO.ELIMINAR) {
                     if (this.sistemaArchivos != null) {
                         this.sistemaArchivos.confirmarOperacionDisco(completada);
                     }
                     desbloquearProcesoPorDisco(completada.getIdProceso());
                 }
+                // ═══════════════════════════════════════════════════════════════════════
+
                 completada = disco.extraerSolicitudCompletada();
             }
         }
@@ -362,7 +442,7 @@ public class Computador implements IClockObserver {
         Cola<Pcb> aux = new Cola<>();
         while (!colaBloqueados.esVacia()) {
             Pcb p = colaBloqueados.desencolar();
-            
+
             if (p.getEstado() == EstadoProceso.READY) {
                 colaListos.encolar(p);
             } else if ("ESPERANDO_IO".equals(p.getMotivoBloqueo())) {
@@ -395,6 +475,14 @@ public class Computador implements IClockObserver {
             if (!encontrado && p.getId().equals(idProceso)) {
                 encontrado = true;
                 if (p.isDeadlineFalladoRegistrado()) {
+                    // ══════ CAMBIO 6a: cancelar pendientes al despertar con deadline vencido ══════
+                    if (sistemaArchivos != null) {
+                        sistemaArchivos.cancelarOperacionPendiente(p.getId());
+                    }
+                    planificadorMedianoPlazo.cancelarSwapDeProceso(
+                        p.getId(), p, this, this.disco);
+                    // ═══════════════════════════════════════════════════════════════════════════
+
                     memoriaRAM.liberarProceso(p);
                     ramLiberada = true;
                     p.setMotivoBloqueo("DEADLINE_EXPIRADO");
@@ -426,9 +514,17 @@ public class Computador implements IClockObserver {
             if (!encontrado && p.getId().equals(idProceso)) {
                 encontrado = true;
                 if (p.isDeadlineFalladoRegistrado()) {
-                     if (this.disco != null) {
+                    // ══════ CAMBIO 6b: cancelar pendientes en suspendidos ══════
+                    if (this.disco != null) {
                         this.disco.liberarProcesoDeSwap(p.getId());
                     }
+                    if (sistemaArchivos != null) {
+                        sistemaArchivos.cancelarOperacionPendiente(p.getId());
+                    }
+                    planificadorMedianoPlazo.cancelarSwapDeProceso(
+                        p.getId(), p, this, this.disco);
+                    // ══════════════════════════════════════════════════════════
+
                     p.setMotivoBloqueo("DEADLINE_EXPIRADO");
                     p.setEstado(EstadoProceso.EXIT);
                     colaTerminados.encolar(p);

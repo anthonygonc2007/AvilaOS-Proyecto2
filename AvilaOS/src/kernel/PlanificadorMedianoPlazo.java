@@ -1,7 +1,3 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
- */
 package kernel;
 
 import enums.EstadoProceso;
@@ -15,224 +11,266 @@ public class PlanificadorMedianoPlazo {
         public final String idProceso;
         public final int bloqueInicioSwap;
         public final ListaEnlazada<Bloque> bloquesSwap;
-        public boolean estabaBloqueadoAlSuspender;
-
-        public RegistroSwap(String idProceso, int bloqueInicioSwap, ListaEnlazada<Bloque> bloquesSwap, boolean estabaBloqueado) {
-            this.idProceso = idProceso;
-            this.bloqueInicioSwap = bloqueInicioSwap;
-            this.bloquesSwap = bloquesSwap;
-            this.estabaBloqueadoAlSuspender = estabaBloqueado;
+        public RegistroSwap(String id, int inicio, ListaEnlazada<Bloque> bloques) {
+            this.idProceso = id;
+            this.bloqueInicioSwap = inicio;
+            this.bloquesSwap = bloques;
         }
     }
 
     private final ListaEnlazada<RegistroSwap> registrosSwap;
     private int totalSuspensiones;
     private int totalReactivaciones;
+    private int memoriaReservadaLiberacion;    // RAM que liberarán swap-outs en vuelo
+    private int memoriaReservadaReactivacion;  // RAM que ocuparán swap-ins en vuelo
 
     public PlanificadorMedianoPlazo() {
         this.registrosSwap = new ListaEnlazada<>();
         this.totalSuspensiones = 0;
         this.totalReactivaciones = 0;
+        this.memoriaReservadaLiberacion = 0;
+        this.memoriaReservadaReactivacion = 0;
     }
 
-    /**
-     * Evalúa si hay procesos en colaNuevos esperando RAM. Si no caben, suspende procesos
-     * hacia el área de intercambio del Disco hasta liberar espacio suficiente.
-     */
+    /** Evalúa si la cola de nuevos puede admitirse; suspende como máximo UNA víctima por ciclo. */
     public synchronized void gestionarAdmisionYSuspension(Computador computador, Disco disco, int cicloActual) {
         if (computador == null || disco == null) return;
-
         Cola<Pcb> colaNuevos = computador.getColaNuevos();
         MemoriaRAM ram = computador.getMemoriaRAM();
 
         while (!colaNuevos.esVacia()) {
-            Pcb candidatoNuevo = colaNuevos.verFrente();
-            if (candidatoNuevo == null) break;
+            Pcb candidato = colaNuevos.verFrente();
+            if (candidato == null) break;
 
-            // Si ya cabe en RAM, admitirlo directamente
-            if (ram.getMemoriaLibre() >= candidatoNuevo.getMemoriaAsignada()) {
-                computador.intentarAdmitirNuevos();
+            int ramDisponibleProyectada = ram.getMemoriaLibre() + memoriaReservadaLiberacion;
+            if (ramDisponibleProyectada >= candidato.getMemoriaAsignada()) {
+                if (ram.getMemoriaLibre() >= candidato.getMemoriaAsignada()) {
+                    computador.intentarAdmitirNuevos();
+                }
                 break;
             }
+            if (candidato.getMemoriaAsignada() > ram.getCapacidadTotal()) break;
 
-            // Si el proceso requiere más RAM que toda la capacidad física, no es admisible
-            if (candidatoNuevo.getMemoriaAsignada() > ram.getCapacidadTotal()) {
-                break;
-            }
-
-            // Intentar suspender un proceso para hacer espacio
-            boolean suspendido = suspenderVictima(computador, disco, cicloActual);
-            if (!suspendido) {
-                // No quedan víctimas elegibles o el área de Swap está llena
-                break;
-            }
+            // Solo una suspensión por ciclo: el resto se reevalúa cuando el disco complete
+            if (!suspenderVictima(computador, disco, cicloActual)) break;
+            break;
         }
-
-        // Intentar admitir si se liberó espacio suficiente
         computador.intentarAdmitirNuevos();
     }
 
-    /**
-     * Elige una víctima (priorizando procesos en BLOCKED de menor prioridad, i.e., mayor número de prioridad)
-     * y la traslada al área reservada de Swap del Disco generando una SolicitudIO de tipo SUSPENDER.
-     */
+    /** Reserva swap y emite SolicitudIO(SUSPENDER). No libera RAM todavía. */
     public synchronized boolean suspenderVictima(Computador computador, Disco disco, int cicloActual) {
-        // 1. Buscar primero en colaBloqueados (criterio del enunciado)
+        // PDF: elegir un proceso BLOQUEADO. No se permite caer a colaListos.
         Pcb victima = extraerVictimaDeCola(computador.getColaBloqueados(), disco.contarBloquesLibresSwap());
-        boolean desdeBloqueados = (victima != null);
-
-        // 2. Fallback: si no hay bloqueados elegibles, buscar en colaListos
-        if (victima == null) {
-            victima = extraerVictimaDeCola(computador.getColaListos(), disco.contarBloquesLibresSwap());
-        }
-
-        if (victima == null) {
-            return false;
-        }
+        if (victima == null) return false;
 
         int bloquesNecesarios = Math.max(1, victima.getMemoriaAsignada());
         ListaEnlazada<Bloque> cadenaSwap = asignarBloquesSwap(disco, victima.getId(), bloquesNecesarios);
         if (cadenaSwap == null || cadenaSwap.esVacia()) {
-            // Reinsertar en su cola original si falló la reserva en Swap
-            if (desdeBloqueados) {
-                computador.getColaBloqueados().encolar(victima);
-            } else {
-                computador.getColaListos().encolar(victima);
-            }
+            computador.getColaBloqueados().encolar(victima);
             return false;
         }
 
         int bloqueInicio = cadenaSwap.obtener(0).getId();
+        victima.setEstado(EstadoProceso.BLOQUEADO_SUSPENDIDO);
+        victima.setSwapOutPendiente(true);
+        victima.setMotivoBloqueo("SWAP_OUT_PENDIENTE");
+        computador.getColaBloqueadosSuspendidos().encolar(victima);
 
-        // Liberar RAM y actualizar estado a suspendido
-        computador.getMemoriaRAM().liberarProceso(victima);
-        if (desdeBloqueados) {
-            victima.setEstado(EstadoProceso.BLOQUEADO_SUSPENDIDO);
-            computador.getColaBloqueadosSuspendidos().encolar(victima);
-        } else {
-            victima.setEstado(EstadoProceso.LISTO_SUSPENDIDO);
-            computador.getColaListosSuspendidos().encolar(victima);
-        }
-
-        registrosSwap.agregarAlFinal(new RegistroSwap(victima.getId(), bloqueInicio, cadenaSwap, desdeBloqueados));
+        registrosSwap.agregarAlFinal(new RegistroSwap(victima.getId(), bloqueInicio, cadenaSwap));
+        memoriaReservadaLiberacion += victima.getMemoriaAsignada();
         totalSuspensiones++;
 
-        // Encolar operación de E/S en la cola única del disco
-        SolicitudIO solSwapOut = new SolicitudIO(
-            victima.getId(),
-            TipoOperacionIO.SUSPENDER,
-            "SWAP:" + victima.getId(),
-            bloqueInicio,
-            bloquesNecesarios,
-            cicloActual
-        );
-        disco.agregarSolicitud(solSwapOut);
+        disco.agregarSolicitud(new SolicitudIO(
+            victima.getId(), TipoOperacionIO.SUSPENDER,
+            "SWAP:" + victima.getId(), bloqueInicio, bloquesNecesarios, cicloActual
+        ));
         return true;
     }
 
-    /**
-     * Cuando se libera memoria RAM (por ejemplo al terminar un proceso), revisa si algún
-     * proceso en LISTO_SUSPENDIDO puede volver a RAM y genera su SolicitudIO de REACTIVAR.
-     */
+    /** Invocado por Computador cuando el disco completa una SolicitudIO(SUSPENDER). */
+    public synchronized void completarSuspension(String idProceso, Computador computador) {
+        if (computador == null) return;
+        Pcb p = buscarPcbEnColasSuspendidas(idProceso, computador);
+        if (p == null) return;
+
+        if (p.isSwapOutPendiente()) {
+            memoriaReservadaLiberacion = Math.max(0, memoriaReservadaLiberacion - p.getMemoriaAsignada());
+            computador.getMemoriaRAM().liberarProceso(p);
+            p.setSwapOutPendiente(false);
+            if (p.getEstado() != EstadoProceso.EXIT
+                && !"DEADLINE_EXPIRADO".equals(p.getMotivoBloqueo())) {
+                p.setMotivoBloqueo("");
+            }
+        }
+    }
+
+    /** Solicita swap-in de procesos Listo/Suspendido si la RAM lo permite (asíncrono). */
     public synchronized int intentarReactivarSuspendidos(Computador computador, Disco disco, int cicloActual) {
         if (computador == null || disco == null) return 0;
-
         Cola<Pcb> colaListosSusp = computador.getColaListosSuspendidos();
         if (colaListosSusp.esVacia()) return 0;
 
-        int reactivados = 0;
+        int emitidas = 0;
         Cola<Pcb> aux = new Cola<>();
-
         while (!colaListosSusp.esVacia()) {
             Pcb pcb = colaListosSusp.desencolar();
-            if (computador.getMemoriaRAM().cargarProceso(pcb)) {
-                RegistroSwap reg = extraerRegistroSwap(pcb.getId());
-                int bloqueInicio = (reg != null) ? reg.bloqueInicioSwap : disco.getLimiteArchivos();
-                if (reg != null) {
-                    liberarBloquesSwap(disco, reg);
-                }
-
-                pcb.setMotivoBloqueo("");
-                pcb.setEstado(EstadoProceso.READY);
-                computador.getColaListos().encolar(pcb);
-                totalReactivaciones++;
-                reactivados++;
-
-                SolicitudIO solSwapIn = new SolicitudIO(
-                    pcb.getId(),
-                    TipoOperacionIO.REACTIVAR,
-                    "SWAP:" + pcb.getId(),
-                    bloqueInicio,
-                    Math.max(1, pcb.getMemoriaAsignada()),
-                    cicloActual
-                );
-                disco.agregarSolicitud(solSwapIn);
-            } else {
-                aux.encolar(pcb);
+            boolean puede = !pcb.isReactivacionPendiente()
+                         && !pcb.isSwapOutPendiente()
+                         && buscarRegistroSwap(pcb.getId()) != null
+                         && (computador.getMemoriaRAM().getMemoriaLibre() - memoriaReservadaReactivacion)
+                             >= pcb.getMemoriaAsignada();
+            if (puede) {
+                RegistroSwap reg = buscarRegistroSwap(pcb.getId());
+                pcb.setReactivacionPendiente(true);
+                memoriaReservadaReactivacion += pcb.getMemoriaAsignada();
+                disco.agregarSolicitud(new SolicitudIO(
+                    pcb.getId(), TipoOperacionIO.REACTIVAR,
+                    "SWAP:" + pcb.getId(), reg.bloqueInicioSwap,
+                    Math.max(1, pcb.getMemoriaAsignada()), cicloActual
+                ));
+                emitidas++;
             }
+            aux.encolar(pcb);
         }
-
-        while (!aux.esVacia()) {
-            colaListosSusp.encolar(aux.desencolar());
-        }
-        return reactivados;
+        while (!aux.esVacia()) colaListosSusp.encolar(aux.desencolar());
+        return emitidas;
     }
 
-    /**
-     * Extrae de la cola el proceso con mayor valor numérico de prioridad (menor urgencia)
-     * cuyo tamaño en memoria quepa en los bloques libres de Swap.
-     */
+    /** Invocado por Computador cuando el disco completa una SolicitudIO(REACTIVAR). */
+    public synchronized void completarReactivacion(String idProceso, Computador computador, Disco disco) {
+        if (computador == null || disco == null) return;
+        RegistroSwap reg = extraerRegistroSwap(idProceso);
+        if (reg == null) return;
+
+        Pcb encontrado = extraerDeColaPorId(computador.getColaListosSuspendidos(), idProceso);
+        if (encontrado == null) {
+            liberarBloquesSwap(disco, reg);
+            return;
+        }
+
+        memoriaReservadaReactivacion = Math.max(0, memoriaReservadaReactivacion - encontrado.getMemoriaAsignada());
+
+        if (computador.getMemoriaRAM().cargarProceso(encontrado)) {
+            liberarBloquesSwap(disco, reg);
+            encontrado.setReactivacionPendiente(false);
+            encontrado.setMotivoBloqueo("");
+            encontrado.setEstado(EstadoProceso.READY);
+            computador.getColaListos().encolar(encontrado);
+            totalReactivaciones++;
+        } else {
+            // RAM insuficiente en el momento de completar (raro): devolver a suspendidos
+            encontrado.setReactivacionPendiente(false);
+            registrosSwap.agregarAlFinal(reg);
+            computador.getColaListosSuspendidos().encolar(encontrado);
+        }
+    }
+
+    /** Llamado desde Computador en rutas de terminación para limpiar swap pendiente. */
+    public synchronized void cancelarSwapDeProceso(String idProceso, Pcb pcbLocal,
+                                                   Computador computador, Disco disco) {
+        RegistroSwap reg = extraerRegistroSwap(idProceso);
+        if (reg != null && disco != null) liberarBloquesSwap(disco, reg);
+
+        Pcb objetivo = (pcbLocal != null) ? pcbLocal
+                      : (computador != null ? buscarPcbEnColasSuspendidas(idProceso, computador) : null);
+        if (objetivo != null && objetivo.isSwapOutPendiente()) {
+            memoriaReservadaLiberacion = Math.max(0, memoriaReservadaLiberacion - objetivo.getMemoriaAsignada());
+            if (computador != null) computador.getMemoriaRAM().liberarProceso(objetivo);
+            objetivo.setSwapOutPendiente(false);
+        }
+        if (objetivo != null && objetivo.isReactivacionPendiente()) {
+            memoriaReservadaReactivacion = Math.max(0, memoriaReservadaReactivacion - objetivo.getMemoriaAsignada());
+            objetivo.setReactivacionPendiente(false);
+        }
+    }
+
+    // ---------- Helpers ----------
+
+    private Pcb buscarPcbEnColasSuspendidas(String id, Computador c) {
+        if (c == null || id == null) return null;
+        Pcb p = buscarEnCola(c.getColaBloqueadosSuspendidos(), id);
+        if (p != null) return p;
+        return buscarEnCola(c.getColaListosSuspendidos(), id);
+    }
+
+    private Pcb buscarEnCola(Cola<Pcb> cola, String id) {
+        Cola<Pcb> aux = new Cola<>();
+        Pcb encontrado = null;
+        while (!cola.esVacia()) {
+            Pcb p = cola.desencolar();
+            if (encontrado == null && p.getId().equals(id)) encontrado = p;
+            aux.encolar(p);
+        }
+        while (!aux.esVacia()) cola.encolar(aux.desencolar());
+        return encontrado;
+    }
+
+    private Pcb extraerDeColaPorId(Cola<Pcb> cola, String id) {
+        Cola<Pcb> aux = new Cola<>();
+        Pcb encontrado = null;
+        while (!cola.esVacia()) {
+            Pcb p = cola.desencolar();
+            if (encontrado == null && p.getId().equals(id)) encontrado = p;
+            else aux.encolar(p);
+        }
+        while (!aux.esVacia()) cola.encolar(aux.desencolar());
+        return encontrado;
+    }
+
+    private RegistroSwap buscarRegistroSwap(String id) {
+        for (int i = 0; i < registrosSwap.getTamano(); i++) {
+            if (registrosSwap.obtener(i).idProceso.equals(id)) return registrosSwap.obtener(i);
+        }
+        return null;
+    }
+
+    private RegistroSwap extraerRegistroSwap(String id) {
+        for (int i = 0; i < registrosSwap.getTamano(); i++) {
+            RegistroSwap r = registrosSwap.obtener(i);
+            if (r.idProceso.equals(id)) { registrosSwap.eliminar(r); return r; }
+        }
+        return null;
+    }
+
     private Pcb extraerVictimaDeCola(Cola<Pcb> cola, int bloquesLibresSwap) {
         if (cola == null || cola.esVacia()) return null;
-
-        Pcb mejorVictima = null;
+        Pcb mejor = null;
         Cola<Pcb> aux = new Cola<>();
-
-        // Primera pasada: identificar candidato
         while (!cola.esVacia()) {
             Pcb actual = cola.desencolar();
-            int memRequerida = Math.max(1, actual.getMemoriaAsignada());
-            if (memRequerida <= bloquesLibresSwap) {
-                if (mejorVictima == null || actual.getPrioridad() > mejorVictima.getPrioridad()) {
-                    mejorVictima = actual;
-                }
+            int memReq = Math.max(1, actual.getMemoriaAsignada());
+            if (memReq <= bloquesLibresSwap && !actual.isSwapOutPendiente()
+                && (mejor == null || actual.getPrioridad() > mejor.getPrioridad())) {
+                mejor = actual;
             }
             aux.encolar(actual);
         }
-
-        // Segunda pasada: reconstruir cola excluyendo únicamente a la víctima elegida
         boolean extraida = false;
         while (!aux.esVacia()) {
             Pcb actual = aux.desencolar();
-            if (!extraida && mejorVictima != null && actual == mejorVictima) {
-                extraida = true;
-            } else {
-                cola.encolar(actual);
-            }
+            if (!extraida && actual == mejor) extraida = true;
+            else cola.encolar(actual);
         }
-
-        return mejorVictima;
+        return mejor;
     }
 
     private ListaEnlazada<Bloque> asignarBloquesSwap(Disco disco, String idProceso, int cantidad) {
         if (disco.contarBloquesLibresSwap() < cantidad) return null;
-
         ListaEnlazada<Bloque> asignados = new ListaEnlazada<>();
         for (int i = 0; i < cantidad; i++) {
             int idLibre = disco.buscarBloqueLibreSwap();
             if (idLibre == -1) {
-                for (int j = 0; j < asignados.getTamano(); j++) {
+                for (int j = 0; j < asignados.getTamano(); j++)
                     disco.liberarBloque(asignados.obtener(j).getId());
-                }
                 return null;
             }
             Bloque b = disco.getBloque(idLibre);
             b.setOcupado(true);
             b.setContenido("SWAP-" + idProceso);
             b.setColorHex("#E74C3C");
-            if (!asignados.esVacia()) {
+            if (!asignados.esVacia())
                 asignados.obtener(asignados.getTamano() - 1).setSiguienteBloque(b.getId());
-            }
             b.setSiguienteBloque(-1);
             asignados.agregarAlFinal(b);
         }
@@ -240,24 +278,13 @@ public class PlanificadorMedianoPlazo {
     }
 
     private void liberarBloquesSwap(Disco disco, RegistroSwap reg) {
-        if (reg == null || reg.bloquesSwap == null) return;
-        for (int i = 0; i < reg.bloquesSwap.getTamano(); i++) {
+        if (reg == null || reg.bloquesSwap == null || disco == null) return;
+        for (int i = 0; i < reg.bloquesSwap.getTamano(); i++)
             disco.liberarBloque(reg.bloquesSwap.obtener(i).getId());
-        }
-    }
-
-    private RegistroSwap extraerRegistroSwap(String idProceso) {
-        for (int i = 0; i < registrosSwap.getTamano(); i++) {
-            RegistroSwap r = registrosSwap.obtener(i);
-            if (r.idProceso.equals(idProceso)) {
-                registrosSwap.eliminar(r);
-                return r;
-            }
-        }
-        return null;
     }
 
     public int getTotalSuspensiones() { return totalSuspensiones; }
     public int getTotalReactivaciones() { return totalReactivaciones; }
     public ListaEnlazada<RegistroSwap> getRegistrosSwap() { return registrosSwap; }
+    public int getMemoriaReservadaLiberacion() { return memoriaReservadaLiberacion; }
 }

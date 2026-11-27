@@ -469,6 +469,13 @@ public class VistaMonitoreo extends javax.swing.JFrame implements IClockObserver
     // =========================================================================
 
     public void inicializarSimulacion(ConfiguracionSimulacion config) {
+            RelojGlobal.pausar();
+        if (this.computador != null) {
+            this.computador.dispose();
+        }
+        this.computador = null;
+        this.disco = null;
+        this.sistemaArchivos = null;
         this.configuracionActual = config;
         RelojGlobal.reiniciar();
 

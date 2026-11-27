@@ -366,16 +366,28 @@ public class SistemaArchivos {
                 case ACTUALIZAR: {
                     NodoFS nodo = buscarNodo(ruta);
                     if (nodo != null && op != null && op.nuevoNombre != null) {
-                        nodo.setNombre(op.nuevoNombre);
+                        String nombreOriginal = nodo.getNombre();
+                        String extension = "";
+                        String nombreBase = nombreOriginal;
+                        if (!nodo.isDirectorio() && nombreOriginal.contains(".")) {
+                            int punto = nombreOriginal.lastIndexOf('.');
+                            nombreBase = nombreOriginal.substring(0, punto);
+                            extension = nombreOriginal.substring(punto);
+                        }
+                        if (!nombreBase.endsWith("_mod")) {
+                            nombreBase = nombreBase + "_mod";
+                        }
+                        String nombreFinal = nombreBase + extension;
+                        nodo.setNombre(nombreFinal);
                         if (!nodo.isDirectorio()) {
                             Archivo arch = (Archivo) nodo;
-                            arch.setExtension(extraerExtension(op.nuevoNombre));
+                            arch.setExtension(extension.replace(".", "")); // sin el punto
                             ListaEnlazada<Bloque> bloques = arch.getBloquesAsignados();
                             for (int i = 0; i < bloques.getTamano(); i++) {
-                                bloques.obtener(i).setContenido(op.nuevoNombre);
+                                bloques.obtener(i).setContenido(nombreFinal);
                             }
                         }
-                        return "Elemento '" + ruta + "' renombrado a '" + op.nuevoNombre + "'.";
+                        return "Elemento '" + ruta + "' renombrado a '" + nombreFinal + "'.";
                     }
                     return "Actualización completada en '" + ruta + "'.";
                 }
@@ -546,4 +558,25 @@ public class SistemaArchivos {
     public ListaEnlazada<Archivo> getTablaAsignacion() { return tablaAsignacion; }
     public Disco getDisco() { return disco; }
     public GestorConcurrencia getGestorConcurrencia() { return gestorConcurrencia; }
+
+/**
+ * Cancela la OperacionPendiente de un proceso que terminó (por deadline, swap u otro)
+ * antes de que el disco completara su E/S. Libera bloques pre-reservados y el RW lock
+ * para evitar fugas de recursos y bloqueos permanentes del archivo.
+ */
+public synchronized void cancelarOperacionPendiente(String idProceso) {
+    if (idProceso == null) return;
+    OperacionPendiente op = extraerOperacionPendiente(idProceso);
+    if (op == null) return;
+
+    gestorConcurrencia.entrarTablaAsignacion(pcbSistema);
+    try {
+        if (op.archivoPreReservado != null) {
+            liberarCadenaBloques(op.archivoPreReservado);
+        }
+    } finally {
+        gestorConcurrencia.salirTablaAsignacion(pcbSistema);
+    }
+    gestorConcurrencia.liberarArchivo(op.rutaObjetivo, idProceso);
+}
 }
